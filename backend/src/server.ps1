@@ -194,8 +194,26 @@ function Handle-StartAssessment {
         New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
         
         try {
+            # Background jobs need their own module imports and login
+            Import-Module Az.Accounts -Force -ErrorAction Stop
+            Import-Module Az.Compute -Force -ErrorAction SilentlyContinue
+            Import-Module Az.DesktopVirtualization -Force -ErrorAction SilentlyContinue
+            Import-Module Az.Monitor -Force -ErrorAction SilentlyContinue
+            Import-Module Az.OperationalInsights -Force -ErrorAction SilentlyContinue
+            Import-Module Az.Resources -Force -ErrorAction SilentlyContinue
+            Import-Module Az.Storage -Force -ErrorAction SilentlyContinue
+            Import-Module Az.Network -Force -ErrorAction SilentlyContinue
+            Import-Module Az.ResourceGraph -Force -ErrorAction SilentlyContinue
+            Import-Module Az.CostManagement -Force -ErrorAction SilentlyContinue
+            Import-Module Az.Reservations -Force -ErrorAction SilentlyContinue
+            Import-Module Az.Advisor -Force -ErrorAction SilentlyContinue
+            
             # Connect with managed identity
-            Connect-AzAccount -Identity -AccountId $ClientId -ErrorAction Stop | Out-Null
+            if ($ClientId) {
+                Connect-AzAccount -Identity -AccountId $ClientId -ErrorAction Stop | Out-Null
+            } else {
+                Connect-AzAccount -Identity -ErrorAction Stop | Out-Null
+            }
             
             # Set output location
             Push-Location $outputDir
