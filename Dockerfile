@@ -30,10 +30,8 @@ COPY backend/ ./backend/
 COPY scripts/ ./scripts/
 
 # Copy and build frontend
-COPY frontend/package*.json ./frontend/
-RUN cd frontend && npm ci --production=false
 COPY frontend/ ./frontend/
-RUN cd frontend && npm run build
+RUN cd frontend && npm install && npm run build
 
 EXPOSE 3000
 
