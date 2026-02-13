@@ -1,0 +1,41 @@
+name: Build & Push Portal Image
+
+on:
+  workflow_dispatch:  # Manual trigger only — you control when to publish
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout portal repo
+        uses: actions/checkout@v4
+
+      - name: Fetch assessment script from private repo
+        run: |
+          mkdir -p scripts
+          curl -fsSL \
+            -H "Authorization: token ${{ secrets.SCRIPT_REPO_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3.raw" \
+            "https://api.github.com/repos/gallothefourth-rg/enhanced-avd-evidence-pack/contents/Get-Enhanced-AVD-EvidencePack.ps1?ref=main" \
+            -o scripts/Get-Enhanced-AVD-EvidencePack.ps1
+          echo "Script downloaded: $(wc -l < scripts/Get-Enhanced-AVD-EvidencePack.ps1) lines"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/gallothefourth-rg/avd-assessment-portal:latest
+            ghcr.io/gallothefourth-rg/avd-assessment-portal:${{ github.sha }}
