@@ -2,8 +2,13 @@
 # AVD Assessment Portal — Container Image
 # PowerShell 7 + Az Modules + Frontend
 #
-# The assessment script is fetched from a private GitHub repo at build time.
-# Build with: az acr build --build-arg GITHUB_TOKEN=ghp_xxx ...
+# BUILD OPTIONS:
+#   Option A — Fetch script from private repo (for CI/automated builds):
+#     az acr build --build-arg GITHUB_TOKEN=ghp_xxx ...
+#
+#   Option B — Local script (for your own builds):
+#     Copy script to scripts/ folder first, then build normally.
+#     The .gitignore prevents scripts/ from being committed.
 # ============================================================================
 
 FROM mcr.microsoft.com/azure-powershell:latest
@@ -14,7 +19,7 @@ RUN apt-get update && apt-get install -y curl && \
     apt-get install -y nodejs && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Install additional Az modules needed by the assessment script
+# Install additional Az modules
 RUN pwsh -Command " \
     Install-Module -Name Az.DesktopVirtualization -Force -AllowClobber -Scope AllUsers; \
     Install-Module -Name Az.Monitor -Force -AllowClobber -Scope AllUsers; \
@@ -30,19 +35,30 @@ WORKDIR /app
 # Copy backend
 COPY backend/ ./backend/
 
-# Fetch assessment script from private repo at build time
-ARG GITHUB_TOKEN
+# Copy scripts/ if it exists locally (Option B — local build)
+# This COPY won't fail if the directory is empty or missing from context
+COPY script[s]/ ./scripts/
+
+# Fetch from private repo if script not present (Option A — CI build)
+ARG GITHUB_TOKEN=""
 ARG SCRIPT_REPO=gallothefourth-rg/enhanced-avd-evidence-pack
 ARG SCRIPT_BRANCH=main
 ARG SCRIPT_PATH=Get-Enhanced-AVD-EvidencePack.ps1
 
 RUN mkdir -p ./scripts && \
-    curl -fsSL \
-      -H "Authorization: token ${GITHUB_TOKEN}" \
-      -H "Accept: application/vnd.github.v3.raw" \
-      "https://api.github.com/repos/${SCRIPT_REPO}/contents/${SCRIPT_PATH}?ref=${SCRIPT_BRANCH}" \
-      -o ./scripts/Get-Enhanced-AVD-EvidencePack.ps1 && \
-    echo "Script downloaded: $(wc -l < ./scripts/Get-Enhanced-AVD-EvidencePack.ps1) lines"
+    if [ ! -f "./scripts/Get-Enhanced-AVD-EvidencePack.ps1" ] && [ -n "${GITHUB_TOKEN}" ]; then \
+      echo "Fetching script from ${SCRIPT_REPO}..." && \
+      curl -fsSL \
+        -H "Authorization: token ${GITHUB_TOKEN}" \
+        -H "Accept: application/vnd.github.v3.raw" \
+        "https://api.github.com/repos/${SCRIPT_REPO}/contents/${SCRIPT_PATH}?ref=${SCRIPT_BRANCH}" \
+        -o ./scripts/Get-Enhanced-AVD-EvidencePack.ps1 && \
+      echo "Script downloaded: $(wc -l < ./scripts/Get-Enhanced-AVD-EvidencePack.ps1) lines"; \
+    elif [ -f "./scripts/Get-Enhanced-AVD-EvidencePack.ps1" ]; then \
+      echo "Using local script: $(wc -l < ./scripts/Get-Enhanced-AVD-EvidencePack.ps1) lines"; \
+    else \
+      echo "ERROR: No script found. Either copy to scripts/ or provide GITHUB_TOKEN build arg." && exit 1; \
+    fi
 
 # Copy and build frontend
 COPY frontend/ ./frontend/

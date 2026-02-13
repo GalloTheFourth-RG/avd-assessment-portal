@@ -75,52 +75,24 @@ This creates:
 | Resource | Purpose | Cost |
 |----------|---------|------|
 | Container App (consumption) | Runs the portal | ~$0 when idle |
-| Azure Container Registry | Stores portal image | ~$5/month (Basic) |
 | Storage Account (LRS) | Stores assessment results | ~$0.02/GB/month |
 | User-Assigned Managed Identity | Azure API access | Free |
 | Log Analytics Workspace | Container logs | ~$2.76/GB ingested |
 
-**Idle cost: ~$5/month** (ACR Basic tier; Container App scales to zero)
+**Idle cost: ~$0/month** (consumption plan scales to zero)
 
-### Step 2: Clone repo and build the container image
+### Step 2: Configure the container image
 
-The portal code is public, but the assessment script is fetched from a private repo at build time using a GitHub Personal Access Token.
+The pre-built portal image is published to GitHub Container Registry. Configure your Container App to pull it:
 
 ```powershell
-# Clone the portal repo
-git clone https://github.com/gallothefourth-rg/avd-assessment-portal.git
-cd avd-assessment-portal
-
-# Create a GitHub PAT with 'repo' scope at https://github.com/settings/tokens
-# The token is used only at build time to download the script — it's not stored in the image
-
-# Build the image (ACR fetches the script from your private repo)
-az acr build --registry avdassessacr --resource-group rg-avd-assessment `
-  --image avd-assessment-portal:latest `
-  --build-arg GITHUB_TOKEN="ghp_your_token_here" `
-  .
-
-# Get ACR credentials and configure the Container App
-$acrPassword = (az acr credential show --name avdassessacr --query "passwords[0].value" -o tsv)
-
-# Build the image in Azure (no local Docker needed)
-az acr build --registry avdassessacr --resource-group rg-avd-assessment --image avd-assessment-portal:latest .
-
-# Get credentials and configure the Container App
-$acrPassword = (az acr credential show --name avdassessacr --query "passwords[0].value" -o tsv)
-
-az containerapp registry set `
-  --name avdassess-portal `
-  --resource-group rg-avd-assessment `
-  --server avdassessacr.azurecr.io `
-  --username avdassessacr `
-  --password "$acrPassword"
-
 az containerapp update `
   --name avdassess-portal `
   --resource-group rg-avd-assessment `
-  --image avdassessacr.azurecr.io/avd-assessment-portal:latest
+  --image ghcr.io/gallothefourth-rg/avd-assessment-portal:latest
 ```
+
+> **Note:** The image is public — no registry credentials needed.
 
 ### Step 3: Grant permissions to target subscriptions
 
@@ -176,20 +148,28 @@ Start-Process "https://$url"
 
 ---
 
-## Updating
+## Updating (for end users)
 
-When a new version of the assessment script is pushed to the private repo:
+When a new version is released:
 
 ```powershell
-# Rebuild the image — fetches latest script from private repo
-az acr build --registry avdassessacr --resource-group rg-avd-assessment `
-  --image avd-assessment-portal:latest `
-  --build-arg GITHUB_TOKEN="ghp_your_token_here" `
-  .
-
-# Force new revision
 az containerapp update -n avdassess-portal -g rg-avd-assessment `
+  --image ghcr.io/gallothefourth-rg/avd-assessment-portal:latest `
   --set-env-vars "BUILD_ID=$(Get-Date -Format 'yyyyMMddHHmmss')"
+```
+
+---
+
+## Publishing New Versions (maintainer only)
+
+```powershell
+# Copy latest script into scripts/ (gitignored — never committed)
+Copy-Item "path\to\Get-Enhanced-AVD-EvidencePack.ps1" -Destination "scripts\" -Force
+
+# Build and push to GitHub Container Registry
+docker build -t ghcr.io/gallothefourth-rg/avd-assessment-portal:latest .
+echo $env:GITHUB_TOKEN | docker login ghcr.io -u gallothefourth-rg --password-stdin
+docker push ghcr.io/gallothefourth-rg/avd-assessment-portal:latest
 ```
 
 ---

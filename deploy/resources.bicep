@@ -1,6 +1,6 @@
 // ============================================================================
 // AVD Assessment Portal — Resource Module
-// Container App + ACR + Storage + Managed Identity
+// Container App + Storage + Managed Identity
 // ============================================================================
 
 param location string
@@ -13,18 +13,6 @@ param targetSubscriptionIds string
 resource managedIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: '${namePrefix}-identity'
   location: location
-}
-
-// ============================================================================
-// Azure Container Registry (Basic tier — stores the portal image)
-// ============================================================================
-resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
-  name: '${namePrefix}acr'
-  location: location
-  sku: { name: 'Basic' }
-  properties: {
-    adminUserEnabled: true
-  }
 }
 
 // ============================================================================
@@ -123,8 +111,7 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
       containers: [
         {
           name: 'portal'
-          // Placeholder image — replaced after ACR build (Step 2 in README)
-          image: 'mcr.microsoft.com/azure-powershell:latest'
+          image: 'ghcr.io/gallothefourth-rg/avd-assessment-portal:latest'
           command: [ 'pwsh', '-File', '/app/startup.ps1' ]
           resources: {
             cpu: json('1.0')
@@ -163,5 +150,3 @@ output portalUrl string = 'https://${containerApp.properties.configuration.ingre
 output managedIdentityPrincipalId string = managedIdentity.properties.principalId
 output managedIdentityClientId string = managedIdentity.properties.clientId
 output storageAccountName string = storageAccount.name
-output acrName string = acr.name
-output acrLoginServer string = acr.properties.loginServer

@@ -2,7 +2,7 @@
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
   "contentVersion": "1.0.0.0",
   "metadata": {
-    "description": "AVD Assessment Portal — deploys Container App, ACR, Storage, and Managed Identity"
+    "description": "AVD Assessment Portal \u2014 deploys Container App, ACR, Storage, and Managed Identity"
   },
   "parameters": {
     "namePrefix": {
@@ -37,18 +37,6 @@
       "apiVersion": "2023-01-31",
       "name": "[variables('identityName')]",
       "location": "[parameters('location')]"
-    },
-    {
-      "type": "Microsoft.ContainerRegistry/registries",
-      "apiVersion": "2023-07-01",
-      "name": "[variables('acrName')]",
-      "location": "[parameters('location')]",
-      "sku": {
-        "name": "Basic"
-      },
-      "properties": {
-        "adminUserEnabled": true
-      }
     },
     {
       "type": "Microsoft.Storage/storageAccounts",
@@ -161,8 +149,12 @@
           "containers": [
             {
               "name": "portal",
-              "image": "mcr.microsoft.com/azure-powershell:latest",
-              "command": ["pwsh", "-Command", "Write-Host 'Placeholder — build and push the portal image to complete setup'; Start-Sleep -Seconds 3600"],
+              "image": "ghcr.io/gallothefourth-rg/avd-assessment-portal:latest",
+              "command": [
+                "pwsh",
+                "-File",
+                "/app/startup.ps1"
+              ],
               "resources": {
                 "cpu": 1.0,
                 "memory": "2Gi"
@@ -214,21 +206,13 @@
       "type": "string",
       "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))).clientId]"
     },
-    "acrName": {
-      "type": "string",
-      "value": "[variables('acrName')]"
-    },
-    "acrLoginServer": {
-      "type": "string",
-      "value": "[reference(resourceId('Microsoft.ContainerRegistry/registries', variables('acrName'))).loginServer]"
-    },
     "storageAccountName": {
       "type": "string",
       "value": "[variables('storageName')]"
     },
     "nextSteps": {
       "type": "string",
-      "value": "Infrastructure deployed! Next: clone the repo, run 'az acr build' to build the container, then run Setup-Permissions.ps1 and Setup-Auth.ps1. See the README for details."
+      "value": "Infrastructure deployed! Next: run Setup-Permissions.ps1 for your AVD subscriptions, then optionally run Setup-Auth.ps1 for Entra ID auth. See the README for details."
     }
   }
 }
