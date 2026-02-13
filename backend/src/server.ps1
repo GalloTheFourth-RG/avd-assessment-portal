@@ -169,7 +169,7 @@ function Handle-StartAssessment {
     $config = $Body | ConvertFrom-Json
     $runId = "run-$(Get-Date -Format 'yyyyMMdd-HHmmss')-$([guid]::NewGuid().ToString().Substring(0,4))"
     
-    # Build parameter set as JSON to pass to subprocess
+    # Build parameter set
     $params = @{
         TenantId = $config.tenantId
         SubscriptionIds = @($config.subscriptionIds)
@@ -190,21 +190,50 @@ function Handle-StartAssessment {
     if ($config.companyName) { $params.CompanyName = $config.companyName }
     if ($config.analystName) { $params.AnalystName = $config.analystName }
     
-    $paramsJson = $params | ConvertTo-Json -Depth 5 -Compress
-    
-    # Write params to temp file
-    $paramsFile = "/tmp/$runId-params.json"
-    $paramsJson | Set-Content -Path $paramsFile -Encoding UTF8
-    
-    # Write a status marker so we can track this run
+    # Write status marker
     @{ status = "running"; startTime = (Get-Date -Format "o") } | ConvertTo-Json | Set-Content "/tmp/$runId-status.json"
     
-    # Write a launcher script to avoid quoting issues
-    $launcherFile = "/tmp/$runId-launch.sh"
-    $cmd = "#!/bin/bash`npwsh -File /app/backend/src/run-assessment.ps1 -ParamsFile '$paramsFile' -RunId '$runId' -StorageAccount '$($script:StorageAccount)' -StorageContainer '$($script:StorageContainer)' -ClientId '$($script:ClientId)' > '/tmp/$runId-stdout.log' 2>'/tmp/$runId-stderr.log'"
-    [System.IO.File]::WriteAllText($launcherFile, $cmd)
+    # Use a PowerShell Runspace — runs in the SAME process, shares Az context
+    $rs = [runspacefactory]::CreateRunspace()
+    $rs.Open()
     
-    bash -c "chmod +x $launcherFile && nohup $launcherFile &"
+    $ps = [powershell]::Create()
+    $ps.Runspace = $rs
+    
+    $ps.AddScript({
+        param($Params, $RunId, $StorageAccount, $StorageContainer, $ScriptPath)
+        
+        $outputDir = Join-Path ([System.IO.Path]::GetTempPath()) $RunId
+        New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+        
+        try {
+            Push-Location $outputDir
+            & $ScriptPath @Params
+            Pop-Location
+            
+            # Upload results to blob storage
+            $ctx = New-AzStorageContext -StorageAccountName $StorageAccount -UseConnectedAccount
+            $files = Get-ChildItem -Path $outputDir -Recurse -File
+            foreach ($file in $files) {
+                $blobName = "$RunId/$($file.Name)"
+                Set-AzStorageBlobContent -File $file.FullName -Container $StorageContainer -Blob $blobName -Context $ctx -Force | Out-Null
+            }
+            
+            @{ status = "completed"; runId = $RunId; fileCount = $files.Count } | ConvertTo-Json | Set-Content "/tmp/$RunId-result.json"
+        }
+        catch {
+            @{ status = "failed"; runId = $RunId; error = $_.Exception.Message } | ConvertTo-Json | Set-Content "/tmp/$RunId-result.json"
+        }
+        finally {
+            if (Test-Path $outputDir) { Remove-Item $outputDir -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }).AddArgument($params).AddArgument($runId).AddArgument($script:StorageAccount).AddArgument($script:StorageContainer).AddArgument($script:ScriptPath) | Out-Null
+    
+    # BeginInvoke runs it async — doesn't block the HTTP listener
+    $handle = $ps.BeginInvoke()
+    
+    # Store for cleanup (optional)
+    $script:ActiveJobs[$runId] = @{ PS = $ps; Handle = $handle; Runspace = $rs }
     
     Send-JsonResponse -Response $Response -Data @{
         runId = $runId
