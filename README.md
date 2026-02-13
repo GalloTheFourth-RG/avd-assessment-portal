@@ -55,7 +55,7 @@ Licensed under [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE), at your optio
 
 **Option A: One-click deploy**
 
-[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fyour-org%2Favd-assessment-portal%2Fmain%2Fazuredeploy.json)
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fgallothefourth-rg%2Favd-assessment-portal%2Fmain%2Fazuredeploy.json)
 
 > After clicking, choose a resource group (or create `rg-avd-assessment`), set a unique **namePrefix**, and click **Review + Create**.
 
