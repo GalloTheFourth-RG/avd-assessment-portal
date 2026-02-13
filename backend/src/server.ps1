@@ -192,18 +192,19 @@ function Handle-StartAssessment {
     
     $paramsJson = $params | ConvertTo-Json -Depth 5 -Compress
     
-    # Write params to temp file (avoids argument escaping nightmare)
+    # Write params to temp file
     $paramsFile = "/tmp/$runId-params.json"
     $paramsJson | Set-Content -Path $paramsFile -Encoding UTF8
     
     # Write a status marker so we can track this run
     @{ status = "running"; startTime = (Get-Date -Format "o") } | ConvertTo-Json | Set-Content "/tmp/$runId-status.json"
     
-    # Launch as a separate pwsh process in background
-    # Uses & (background operator) at the OS level via bash
-    $runnerScript = "/app/backend/src/run-assessment.ps1"
-    $bashCmd = "pwsh -File '$runnerScript' -ParamsFile '$paramsFile' -RunId '$runId' -StorageAccount '$($script:StorageAccount)' -StorageContainer '$($script:StorageContainer)' -ClientId '$($script:ClientId)' > /tmp/$runId-stdout.log 2>/tmp/$runId-stderr.log &"
-    bash -c $bashCmd
+    # Write a launcher script to avoid quoting issues
+    $launcherFile = "/tmp/$runId-launch.sh"
+    $cmd = "#!/bin/bash`npwsh -File /app/backend/src/run-assessment.ps1 -ParamsFile '$paramsFile' -RunId '$runId' -StorageAccount '$($script:StorageAccount)' -StorageContainer '$($script:StorageContainer)' -ClientId '$($script:ClientId)' > '/tmp/$runId-stdout.log' 2>'/tmp/$runId-stderr.log'"
+    [System.IO.File]::WriteAllText($launcherFile, $cmd)
+    
+    bash -c "chmod +x $launcherFile && nohup $launcherFile &"
     
     Send-JsonResponse -Response $Response -Data @{
         runId = $runId
