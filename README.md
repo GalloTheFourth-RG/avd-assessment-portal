@@ -47,28 +47,20 @@ Licensed under [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE), at your optio
 
 ### Prerequisites
 
-- Azure subscription with **Owner** or **Contributor + User Access Administrator**
-- [Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli) installed (`az --version`)
-- PowerShell 7+ (`pwsh --version`)
+- Azure subscription with **Owner** or **User Access Administrator** (for role assignments)
+- [Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli) (only needed for optional steps 3-4)
 
-### Step 1: Deploy Azure infrastructure
-
-**Option A: One-click deploy**
+### Step 1: Deploy
 
 [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fgallothefourth-rg%2Favd-assessment-portal%2Fmain%2Fazuredeploy.json)
 
-> After clicking, choose a resource group (or create `rg-avd-assessment`), set a unique **namePrefix**, and click **Review + Create**.
+1. Click the button above
+2. Choose or create a resource group
+3. Set a unique **namePrefix** (e.g., `avdassess` — must be globally unique for the Storage Account)
+4. Leave **assignReaderOnSubscription** as `true` to auto-assign Reader + Cost Management Reader + Log Analytics Reader
+5. Click **Review + Create**
 
-**Option B: CLI deploy**
-
-```powershell
-az login
-az group create -n rg-avd-assessment -l eastus
-az deployment group create `
-  --resource-group rg-avd-assessment `
-  --template-file azuredeploy.json `
-  --parameters namePrefix="avdassess"
-```
+> **Requires:** Owner or User Access Administrator on the subscription for role assignments.
 
 This creates:
 
@@ -78,59 +70,41 @@ This creates:
 | Storage Account (LRS) | Stores assessment results | ~$0.02/GB/month |
 | User-Assigned Managed Identity | Azure API access | Free |
 | Log Analytics Workspace | Container logs | ~$2.76/GB ingested |
+| RBAC role assignments | Reader, Cost Mgmt, Log Analytics on subscription | Free |
 
 **Idle cost: ~$0/month** (consumption plan scales to zero)
 
-### Step 2: Configure the container image
+### Step 2: Open the portal
 
-The pre-built portal image is published to GitHub Container Registry. Configure your Container App to pull it:
+The deployment output includes the portal URL. Navigate to it — the portal should be live.
 
 ```powershell
-az containerapp update `
-  --name avdassess-portal `
-  --resource-group rg-avd-assessment `
-  --image ghcr.io/gallothefourth-rg/avd-assessment-portal:latest
+# Or get the URL from CLI
+az containerapp show -n <namePrefix>-portal -g <resource-group> --query "properties.configuration.ingress.fqdn" -o tsv
 ```
 
-> **Note:** The image is public — no registry credentials needed.
+### Step 3 (optional): Assess additional subscriptions
 
-### Step 3: Grant permissions to target subscriptions
-
-The managed identity needs Reader access on the subscriptions containing your AVD resources:
+The deployment auto-assigns permissions on the subscription where you deployed. To assess AVD resources in **other** subscriptions:
 
 ```powershell
-$principalId = (az identity show -g rg-avd-assessment -n avdassess-identity --query principalId -o tsv)
+$principalId = (az identity show -g <resource-group> -n <namePrefix>-identity --query principalId -o tsv)
 
-pwsh deploy/Setup-Permissions.ps1 `
-  -PrincipalId $principalId `
-  -SubscriptionIds @("your-avd-subscription-id-1", "your-avd-subscription-id-2") `
-  -IncludeCostReader `
-  -IncludeLogAnalyticsReader
+# Assign roles on additional subscriptions
+az role assignment create --assignee-object-id $principalId --assignee-principal-type ServicePrincipal --role "Reader" --scope "/subscriptions/<other-sub-id>"
+az role assignment create --assignee-object-id $principalId --assignee-principal-type ServicePrincipal --role "Cost Management Reader" --scope "/subscriptions/<other-sub-id>"
+az role assignment create --assignee-object-id $principalId --assignee-principal-type ServicePrincipal --role "Log Analytics Reader" --scope "/subscriptions/<other-sub-id>"
 ```
 
-Roles assigned:
-- **Reader** — enumerate VMs, host pools, session hosts
-- **Cost Management Reader** — query actual billed costs
-- **Log Analytics Reader** — run KQL queries for user metrics
+### Step 4 (optional): Enable Entra ID authentication
 
-### Step 4: Enable Entra ID authentication (recommended)
+To require sign-in before accessing the portal, see [Setting up Entra ID auth](deploy/Setup-Auth.ps1) or run:
 
 ```powershell
-pwsh deploy/Setup-Auth.ps1
-```
-
-This creates an Entra ID App Registration and enables built-in authentication on the Container App. Users must sign in with their organizational account before accessing the portal.
-
-To restrict access to specific users/groups:
-1. Azure Portal → Entra ID → Enterprise Applications → "AVD Assessment Portal"
-2. Properties → **Assignment Required** = Yes
-3. Users and groups → Add allowed users/groups
-
-### Step 5: Open the portal
-
-```powershell
-$url = (az containerapp show -n avdassess-portal -g rg-avd-assessment --query "properties.configuration.ingress.fqdn" -o tsv)
-Start-Process "https://$url"
+# Clone the repo to get the setup script
+git clone https://github.com/gallothefourth-rg/avd-assessment-portal.git
+cd avd-assessment-portal
+pwsh deploy/Setup-Auth.ps1 -ResourceGroup <resource-group> -ContainerAppName <namePrefix>-portal
 ```
 
 ---
