@@ -16,8 +16,8 @@ $ErrorActionPreference = "Stop"
 $script:StorageAccount = $env:STORAGE_ACCOUNT_NAME
 $script:StorageContainer = $env:STORAGE_CONTAINER ?? "results"
 $script:ClientId = $env:AZURE_CLIENT_ID
-$script:ScriptPath = Join-Path $PSScriptRoot ".." "scripts" "Get-Enhanced-AVD-EvidencePack.ps1"
-$script:FrontendPath = Join-Path $PSScriptRoot ".." ".." "frontend" "dist"
+$script:ScriptPath = "/app/scripts/Get-Enhanced-AVD-EvidencePack.ps1"
+$script:FrontendPath = "/app/frontend/dist"
 $script:ActiveJobs = @{}
 
 # ============================================================================
