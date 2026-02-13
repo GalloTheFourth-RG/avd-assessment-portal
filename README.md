@@ -49,17 +49,23 @@ A self-hosted web portal that runs the Enhanced AVD Evidence Pack inside your Az
 - [Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli) installed (`az --version`)
 - PowerShell 7+ (`pwsh --version`)
 
-### Step 1: Clone and deploy infrastructure
+### Step 1: Deploy Azure infrastructure
+
+**Option A: One-click deploy**
+
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FYOUR-ACTUAL-GITHUB-USERNAME%2Favd-assessment-portal%2Fmain%2Fazuredeploy.json)
+
+> After clicking, choose a resource group (or create `rg-avd-assessment`), set a unique **namePrefix**, and click **Review + Create**.
+
+**Option B: CLI deploy**
 
 ```powershell
-git clone https://github.com/your-org/avd-assessment-portal.git
-cd avd-assessment-portal
-
 az login
-az deployment sub create `
-  --location eastus `
-  --template-file deploy/main.bicep `
-  --parameters resourceGroupName="rg-avd-assessment" namePrefix="avdassess"
+az group create -n rg-avd-assessment -l eastus
+az deployment group create `
+  --resource-group rg-avd-assessment `
+  --template-file azuredeploy.json `
+  --parameters namePrefix="avdassess"
 ```
 
 This creates:
@@ -74,9 +80,13 @@ This creates:
 
 **Idle cost: ~$5/month** (ACR Basic tier; Container App scales to zero)
 
-### Step 2: Build and push the container image
+### Step 2: Clone repo and build the container image
 
 ```powershell
+# Clone the repo (skip if you already have it)
+git clone https://github.com/YOUR-ACTUAL-GITHUB-USERNAME/avd-assessment-portal.git
+cd avd-assessment-portal
+
 # Enable ACR admin (needed for Container App image pull)
 az acr update --name avdassessacr --resource-group rg-avd-assessment --admin-enabled true
 
@@ -187,8 +197,8 @@ az containerapp update -n avdassess-portal -g rg-avd-assessment `
 ```
 avd-assessment-portal/
 ├── deploy/
-│   ├── main.bicep                ← Subscription-level deployment
-│   ├── resources.bicep           ← Container App + Storage + Identity
+│   ├── main.bicep                ← Subscription-level deployment (CLI)
+│   ├── resources.bicep           ← Container App + ACR + Storage + Identity
 │   ├── Setup-Permissions.ps1     ← RBAC role assignments for target subs
 │   └── Setup-Auth.ps1            ← Entra ID Easy Auth configuration
 ├── backend/
@@ -203,6 +213,7 @@ avd-assessment-portal/
 │   └── vite.config.js
 ├── scripts/
 │   └── Get-Enhanced-AVD-EvidencePack.ps1  ← Assessment script (v4.1.0)
+├── azuredeploy.json              ← ARM template (Deploy to Azure button)
 ├── Dockerfile                    ← PowerShell 7 + Az + Node + frontend
 ├── startup.ps1                   ← Container startup wrapper
 ├── CHANGELOG.md                  ← Release history
@@ -233,3 +244,4 @@ avd-assessment-portal/
 - **Consumption plan** — scales to zero when idle, meaning near-zero cost between assessments
 - **ACR build** — builds the container in Azure, no local Docker installation required
 - **Easy Auth** — authentication handled at the platform level (Container Apps), not in application code
+
