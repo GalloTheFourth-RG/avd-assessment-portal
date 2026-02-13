@@ -24,43 +24,35 @@ $script:AzConnected = $false
 # ============================================================================
 # Connect to Azure on startup using Managed Identity
 # ============================================================================
+function Ensure-AzLogin {
+    # Re-establish managed identity login (assessment script may overwrite context)
+    try {
+        if ($script:ClientId) {
+            Connect-AzAccount -Identity -AccountId $script:ClientId -ErrorAction Stop | Out-Null
+        } else {
+            Connect-AzAccount -Identity -ErrorAction Stop | Out-Null
+        }
+        $script:AzConnected = $true
+        
+        # Refresh storage context
+        if ($script:StorageAccount) {
+            $script:StorageCtx = New-AzStorageContext -StorageAccountName $script:StorageAccount -UseConnectedAccount -ErrorAction SilentlyContinue
+        }
+        return $true
+    } catch {
+        Write-Host "  ⚠ Az login failed: $($_.Exception.Message)" -ForegroundColor Yellow
+        return $false
+    }
+}
+
 Write-Host "  Connecting to Azure..." -ForegroundColor Gray
 Write-Host "  AZURE_CLIENT_ID: $(if ($script:ClientId) { $script:ClientId } else { 'NOT SET' })" -ForegroundColor Gray
-try {
-    if ($script:ClientId) {
-        Connect-AzAccount -Identity -AccountId $script:ClientId -ErrorAction Stop | Out-Null
-        Write-Host "  ✓ Connected with user-assigned managed identity" -ForegroundColor Green
-    } else {
-        # Try system-assigned identity as fallback
-        Connect-AzAccount -Identity -ErrorAction Stop | Out-Null
-        Write-Host "  ✓ Connected with system-assigned managed identity" -ForegroundColor Green
-    }
-    $script:AzConnected = $true
+if (Ensure-AzLogin) {
     $ctx = Get-AzContext
-    Write-Host "  ✓ Tenant: $($ctx.Tenant.Id)" -ForegroundColor Green
-    
-    # Pre-create storage context
-    if ($script:StorageAccount) {
-        try {
-            $script:StorageCtx = New-AzStorageContext -StorageAccountName $script:StorageAccount -UseConnectedAccount -ErrorAction Stop
-            Write-Host "  ✓ Storage: $($script:StorageAccount)" -ForegroundColor Green
-        } catch {
-            Write-Host "  ⚠ Storage context failed: $($_.Exception.Message)" -ForegroundColor Yellow
-            Write-Host "    Trying storage account key fallback..." -ForegroundColor Gray
-            try {
-                $keys = Get-AzStorageAccountKey -ResourceGroupName "rg-avd-assessment" -AccountName $script:StorageAccount -ErrorAction Stop
-                $script:StorageCtx = New-AzStorageContext -StorageAccountName $script:StorageAccount -StorageAccountKey $keys[0].Value
-                Write-Host "  ✓ Storage: $($script:StorageAccount) (via key)" -ForegroundColor Green
-            } catch {
-                Write-Host "  ⚠ Storage key fallback also failed: $($_.Exception.Message)" -ForegroundColor Yellow
-                $script:StorageCtx = $null
-            }
-        }
-    }
-} catch {
-    Write-Host "  ⚠ Azure login failed: $($_.Exception.Message)" -ForegroundColor Yellow
-    Write-Host "  The portal will start but Azure API calls will fail." -ForegroundColor Yellow
-    Write-Host "  Check that AZURE_CLIENT_ID is set and the managed identity is assigned to this Container App." -ForegroundColor Yellow
+    Write-Host "  ✓ Connected: Tenant $($ctx.Tenant.Id)" -ForegroundColor Green
+    if ($script:StorageCtx) { Write-Host "  ✓ Storage: $($script:StorageAccount)" -ForegroundColor Green }
+} else {
+    Write-Host "  ⚠ Azure login failed. Portal will start but API calls will fail." -ForegroundColor Yellow
 }
 
 # ============================================================================
@@ -131,7 +123,10 @@ function Handle-Health {
     param($Response)
     $tenantId = $null
     if ($script:AzConnected) {
-        try { $tenantId = (Get-AzContext).Tenant.Id } catch {}
+        try { 
+            $azCtx = Get-AzContext -ErrorAction SilentlyContinue
+            $tenantId = if ($azCtx) { $azCtx.Tenant.Id } else { $null }
+        } catch {}
     }
     $data = @{
         status = "healthy"
@@ -151,7 +146,7 @@ function Handle-Health {
 function Handle-ListSubscriptions {
     param($Response)
     try {
-        if (-not $script:AzConnected) { throw "Not connected to Azure. Check managed identity configuration." }
+        Ensure-AzLogin | Out-Null
         $subs = Get-AzSubscription -ErrorAction Stop | Select-Object @{N='id';E={$_.SubscriptionId}}, @{N='name';E={$_.Name}}, @{N='state';E={$_.State}}
         Send-JsonResponse -Response $Response -Data @{ subscriptions = @($subs) }
     }
@@ -200,6 +195,10 @@ function Handle-StartAssessment {
         & $script:ScriptPath @params
         Pop-Location
         
+        # Re-login — the assessment script calls Connect-AzAccount internally which trashes our managed identity context
+        Write-Host "  [$runId] Re-establishing managed identity login..." -ForegroundColor Cyan
+        Ensure-AzLogin | Out-Null
+        
         # Upload results to blob storage
         Write-Host "  [$runId] Uploading results..." -ForegroundColor Cyan
         $files = Get-ChildItem -Path $outputDir -Recurse -File
@@ -217,6 +216,8 @@ function Handle-StartAssessment {
     }
     catch {
         Write-Host "  [$runId] FAILED: $($_.Exception.Message)" -ForegroundColor Red
+        # Re-login even on failure so subsequent API calls work
+        Ensure-AzLogin | Out-Null
         Send-JsonResponse -Response $Response -Data @{
             runId = $runId
             status = "failed"
