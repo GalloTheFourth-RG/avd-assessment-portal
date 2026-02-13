@@ -35,8 +35,11 @@ RUN cd frontend && npm install && npm run build
 
 EXPOSE 3000
 
+# Copy startup wrapper
+COPY startup.ps1 /app/startup.ps1
+
 # Health check
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=5 \
     CMD pwsh -Command "try { (Invoke-WebRequest -Uri http://localhost:3000/api/health -TimeoutSec 3).StatusCode -eq 200 } catch { exit 1 }"
 
-CMD ["pwsh", "-File", "/app/backend/src/server.ps1"]
+CMD ["pwsh", "-File", "/app/startup.ps1"]
