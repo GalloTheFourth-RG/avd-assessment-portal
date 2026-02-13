@@ -19,6 +19,7 @@ RUN pwsh -Command " \
     Install-Module -Name Az.OperationalInsights -Force -AllowClobber -Scope AllUsers; \
     Install-Module -Name Az.Reservations -Force -AllowClobber -Scope AllUsers; \
     Install-Module -Name Az.Advisor -Force -AllowClobber -Scope AllUsers; \
+    Install-Module -Name ThreadJob -Force -AllowClobber -Scope AllUsers; \
     "
 
 WORKDIR /app

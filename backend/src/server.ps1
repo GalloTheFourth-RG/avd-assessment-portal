@@ -194,25 +194,15 @@ function Handle-StartAssessment {
         New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
         
         try {
-            # Background jobs need their own module imports and login
-            Import-Module Az.Accounts -Force -ErrorAction Stop
-            Import-Module Az.Compute -Force -ErrorAction SilentlyContinue
-            Import-Module Az.DesktopVirtualization -Force -ErrorAction SilentlyContinue
-            Import-Module Az.Monitor -Force -ErrorAction SilentlyContinue
-            Import-Module Az.OperationalInsights -Force -ErrorAction SilentlyContinue
-            Import-Module Az.Resources -Force -ErrorAction SilentlyContinue
-            Import-Module Az.Storage -Force -ErrorAction SilentlyContinue
-            Import-Module Az.Network -Force -ErrorAction SilentlyContinue
-            Import-Module Az.ResourceGraph -Force -ErrorAction SilentlyContinue
-            Import-Module Az.CostManagement -Force -ErrorAction SilentlyContinue
-            Import-Module Az.Reservations -Force -ErrorAction SilentlyContinue
-            Import-Module Az.Advisor -Force -ErrorAction SilentlyContinue
-            
-            # Connect with managed identity
-            if ($ClientId) {
-                Connect-AzAccount -Identity -AccountId $ClientId -ErrorAction Stop | Out-Null
-            } else {
-                Connect-AzAccount -Identity -ErrorAction Stop | Out-Null
+            # Thread jobs inherit the parent's Az context
+            # Verify we have a connection, reconnect only if needed
+            $azCtx = Get-AzContext -ErrorAction SilentlyContinue
+            if (-not $azCtx) {
+                if ($ClientId) {
+                    Connect-AzAccount -Identity -AccountId $ClientId -ErrorAction Stop | Out-Null
+                } else {
+                    Connect-AzAccount -Identity -ErrorAction Stop | Out-Null
+                }
             }
             
             # Set output location
@@ -241,7 +231,7 @@ function Handle-StartAssessment {
         }
     }
     
-    $job = Start-Job -ScriptBlock $jobScript -ArgumentList $script:ScriptPath, $params, $runId, $script:StorageAccount, $script:StorageContainer, $script:ClientId
+    $job = Start-ThreadJob -ScriptBlock $jobScript -ArgumentList $script:ScriptPath, $params, $runId, $script:StorageAccount, $script:StorageContainer, $script:ClientId
     $script:ActiveJobs[$runId] = @{ Job = $job; StartTime = Get-Date; Config = $config }
     
     Send-JsonResponse -Response $Response -Data @{
