@@ -190,55 +190,41 @@ function Handle-StartAssessment {
     if ($config.companyName) { $params.CompanyName = $config.companyName }
     if ($config.analystName) { $params.AnalystName = $config.analystName }
     
-    # Write status marker
-    @{ status = "running"; startTime = (Get-Date -Format "o") } | ConvertTo-Json | Set-Content "/tmp/$runId-status.json"
+    $outputDir = Join-Path ([System.IO.Path]::GetTempPath()) $runId
+    New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
     
-    # Use a PowerShell Runspace — runs in the SAME process, shares Az context
-    $rs = [runspacefactory]::CreateRunspace()
-    $rs.Open()
-    
-    $ps = [powershell]::Create()
-    $ps.Runspace = $rs
-    
-    $ps.AddScript({
-        param($Params, $RunId, $StorageAccount, $StorageContainer, $ScriptPath)
+    try {
+        Write-Host "  [$runId] Starting assessment (blocking)..." -ForegroundColor Cyan
         
-        $outputDir = Join-Path ([System.IO.Path]::GetTempPath()) $RunId
-        New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+        Push-Location $outputDir
+        & $script:ScriptPath @params
+        Pop-Location
         
-        try {
-            Push-Location $outputDir
-            & $ScriptPath @Params
-            Pop-Location
-            
-            # Upload results to blob storage
-            $ctx = New-AzStorageContext -StorageAccountName $StorageAccount -UseConnectedAccount
-            $files = Get-ChildItem -Path $outputDir -Recurse -File
-            foreach ($file in $files) {
-                $blobName = "$RunId/$($file.Name)"
-                Set-AzStorageBlobContent -File $file.FullName -Container $StorageContainer -Blob $blobName -Context $ctx -Force | Out-Null
-            }
-            
-            @{ status = "completed"; runId = $RunId; fileCount = $files.Count } | ConvertTo-Json | Set-Content "/tmp/$RunId-result.json"
+        # Upload results to blob storage
+        Write-Host "  [$runId] Uploading results..." -ForegroundColor Cyan
+        $files = Get-ChildItem -Path $outputDir -Recurse -File
+        foreach ($file in $files) {
+            $blobName = "$runId/$($file.Name)"
+            Set-AzStorageBlobContent -File $file.FullName -Container $script:StorageContainer -Blob $blobName -Context $script:StorageCtx -Force | Out-Null
         }
-        catch {
-            @{ status = "failed"; runId = $RunId; error = $_.Exception.Message } | ConvertTo-Json | Set-Content "/tmp/$RunId-result.json"
+        
+        Write-Host "  [$runId] Complete! $($files.Count) files." -ForegroundColor Green
+        Send-JsonResponse -Response $Response -Data @{
+            runId = $runId
+            status = "completed"
+            fileCount = $files.Count
         }
-        finally {
-            if (Test-Path $outputDir) { Remove-Item $outputDir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+    catch {
+        Write-Host "  [$runId] FAILED: $($_.Exception.Message)" -ForegroundColor Red
+        Send-JsonResponse -Response $Response -Data @{
+            runId = $runId
+            status = "failed"
+            error = $_.Exception.Message
         }
-    }).AddArgument($params).AddArgument($runId).AddArgument($script:StorageAccount).AddArgument($script:StorageContainer).AddArgument($script:ScriptPath) | Out-Null
-    
-    # BeginInvoke runs it async — doesn't block the HTTP listener
-    $handle = $ps.BeginInvoke()
-    
-    # Store for cleanup (optional)
-    $script:ActiveJobs[$runId] = @{ PS = $ps; Handle = $handle; Runspace = $rs }
-    
-    Send-JsonResponse -Response $Response -Data @{
-        runId = $runId
-        status = "started"
-        message = "Assessment started. Poll /api/assess/$runId for status."
+    }
+    finally {
+        if (Test-Path $outputDir) { Remove-Item $outputDir -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
 
