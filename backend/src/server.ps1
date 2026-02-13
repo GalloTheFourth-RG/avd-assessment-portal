@@ -247,12 +247,14 @@ function Handle-ListResults {
     try {
         $ctx = New-AzStorageContext -StorageAccountName $script:StorageAccount -UseConnectedAccount
         $blobs = Get-AzStorageBlob -Container $script:StorageContainer -Prefix "$RunId/" -Context $ctx
+        $prefix = "^$RunId/"
         $files = $blobs | ForEach-Object {
+            $cleanName = $_.Name -replace $prefix, ''
             @{
-                name = $_.Name -replace "^$RunId/", ""
+                name = $cleanName
                 size = $_.Length
                 lastModified = $_.LastModified.ToString("o")
-                url = "/api/results/$RunId/$($_.Name -replace "^$RunId/", "")"
+                url = "/api/results/$RunId/$cleanName"
             }
         }
         Send-JsonResponse -Response $Response -Data @{ runId = $RunId; files = @($files) }
