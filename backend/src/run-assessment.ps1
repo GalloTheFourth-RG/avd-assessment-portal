@@ -53,11 +53,11 @@ try {
     }
 
     Write-Host "[$RunId] Complete. $($files.Count) files uploaded."
-    @{ status = "completed"; runId = $RunId; fileCount = $files.Count } | ConvertTo-Json | Write-Output
+    @{ status = "completed"; runId = $RunId; fileCount = $files.Count } | ConvertTo-Json | Set-Content "/tmp/$RunId-result.json"
 }
 catch {
     Write-Host "[$RunId] FAILED: $($_.Exception.Message)"
-    @{ status = "failed"; runId = $RunId; error = $_.Exception.Message } | ConvertTo-Json | Write-Output
+    @{ status = "failed"; runId = $RunId; error = $_.Exception.Message } | ConvertTo-Json | Set-Content "/tmp/$RunId-result.json"
 }
 finally {
     if (Test-Path $outputDir) { Remove-Item $outputDir -Recurse -Force -ErrorAction SilentlyContinue }

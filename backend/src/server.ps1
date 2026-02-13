@@ -230,29 +230,25 @@ function Handle-AssessmentStatus {
         }
     }
     else {
-        # Process finished — read output
+        # Process finished — read result file
+        $resultFile = "/tmp/$RunId-result.json"
         $stdoutFile = "/tmp/$RunId-stdout.log"
         $stderrFile = "/tmp/$RunId-stderr.log"
         
         $result = $null
-        if (Test-Path $stdoutFile) {
-            $stdout = Get-Content $stdoutFile -Raw
-            # Try to parse the last JSON line from stdout
-            $jsonLines = $stdout -split "`n" | Where-Object { $_.Trim().StartsWith('{') }
-            if ($jsonLines) {
-                $lastJson = $jsonLines[-1]
-                try { $result = $lastJson | ConvertFrom-Json } catch {}
-            }
+        if (Test-Path $resultFile) {
+            try { $result = Get-Content $resultFile -Raw | ConvertFrom-Json } catch {}
         }
         
         $stderrContent = if (Test-Path $stderrFile) { Get-Content $stderrFile -Raw } else { "" }
         
         # Clean up
+        Remove-Item $resultFile -Force -ErrorAction SilentlyContinue
         Remove-Item $stdoutFile -Force -ErrorAction SilentlyContinue
         Remove-Item $stderrFile -Force -ErrorAction SilentlyContinue
         $script:ActiveJobs.Remove($RunId)
         
-        if ($proc.ExitCode -eq 0 -and $result -and $result.status -eq "completed") {
+        if ($result -and $result.status -eq "completed") {
             Send-JsonResponse -Response $Response -Data @{
                 runId = $RunId
                 status = "completed"
@@ -260,10 +256,20 @@ function Handle-AssessmentStatus {
                 fileCount = $result.fileCount
             }
         }
+        elseif ($result -and $result.error) {
+            Send-JsonResponse -Response $Response -Data @{
+                runId = $RunId
+                status = "failed"
+                elapsedSeconds = $elapsed
+                error = $result.error
+            }
+        }
         else {
-            $errorMsg = if ($result -and $result.error) { $result.error } 
-                        elseif ($stderrContent) { $stderrContent.Substring(0, [math]::Min(500, $stderrContent.Length)) }
-                        else { "Process exited with code $($proc.ExitCode)" }
+            # No result file — check stderr and stdout for clues
+            $stdoutContent = if (Test-Path "/tmp/$RunId-stdout.log") { Get-Content "/tmp/$RunId-stdout.log" -Raw -ErrorAction SilentlyContinue } else { "" }
+            $errorMsg = if ($stderrContent) { $stderrContent.Substring(0, [math]::Min(500, $stderrContent.Length)) }
+                        elseif ($stdoutContent) { "Process output: " + $stdoutContent.Substring(0, [math]::Min(500, $stdoutContent.Length)) }
+                        else { "Process exited with code $($proc.ExitCode) but no result or error output found" }
             Send-JsonResponse -Response $Response -Data @{
                 runId = $RunId
                 status = "failed"
