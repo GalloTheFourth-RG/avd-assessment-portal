@@ -38,6 +38,25 @@ try {
     $script:AzConnected = $true
     $ctx = Get-AzContext
     Write-Host "  ✓ Tenant: $($ctx.Tenant.Id)" -ForegroundColor Green
+    
+    # Pre-create storage context
+    if ($script:StorageAccount) {
+        try {
+            $script:StorageCtx = New-AzStorageContext -StorageAccountName $script:StorageAccount -UseConnectedAccount -ErrorAction Stop
+            Write-Host "  ✓ Storage: $($script:StorageAccount)" -ForegroundColor Green
+        } catch {
+            Write-Host "  ⚠ Storage context failed: $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Host "    Trying storage account key fallback..." -ForegroundColor Gray
+            try {
+                $keys = Get-AzStorageAccountKey -ResourceGroupName "rg-avd-assessment" -AccountName $script:StorageAccount -ErrorAction Stop
+                $script:StorageCtx = New-AzStorageContext -StorageAccountName $script:StorageAccount -StorageAccountKey $keys[0].Value
+                Write-Host "  ✓ Storage: $($script:StorageAccount) (via key)" -ForegroundColor Green
+            } catch {
+                Write-Host "  ⚠ Storage key fallback also failed: $($_.Exception.Message)" -ForegroundColor Yellow
+                $script:StorageCtx = $null
+            }
+        }
+    }
 } catch {
     Write-Host "  ⚠ Azure login failed: $($_.Exception.Message)" -ForegroundColor Yellow
     Write-Host "  The portal will start but Azure API calls will fail." -ForegroundColor Yellow
@@ -269,7 +288,7 @@ function Handle-AssessmentStatus {
 function Handle-ListResults {
     param($Response, [string]$RunId)
     try {
-        $ctx = New-AzStorageContext -StorageAccountName $script:StorageAccount -UseConnectedAccount
+        $ctx = $script:StorageCtx; if (-not $ctx) { throw "Storage not configured" }
         $blobs = Get-AzStorageBlob -Container $script:StorageContainer -Prefix "$RunId/" -Context $ctx
         $prefix = "^$RunId/"
         $files = $blobs | ForEach-Object {
@@ -294,7 +313,7 @@ function Handle-ListResults {
 function Handle-DownloadResult {
     param($Response, [string]$RunId, [string]$FileName)
     try {
-        $ctx = New-AzStorageContext -StorageAccountName $script:StorageAccount -UseConnectedAccount
+        $ctx = $script:StorageCtx; if (-not $ctx) { throw "Storage not configured" }
         $blobName = "$RunId/$FileName"
         $tempFile = Join-Path ([System.IO.Path]::GetTempPath()) $FileName
         
@@ -324,7 +343,7 @@ function Handle-DownloadResult {
 function Handle-ListRuns {
     param($Response)
     try {
-        $ctx = New-AzStorageContext -StorageAccountName $script:StorageAccount -UseConnectedAccount
+        $ctx = $script:StorageCtx; if (-not $ctx) { throw "Storage not configured" }
         $blobs = Get-AzStorageBlob -Container $script:StorageContainer -Context $ctx
         $runs = @{}
         foreach ($blob in $blobs) {
