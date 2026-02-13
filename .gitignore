@@ -1,3 +1,6 @@
+# Assessment script lives in a private repo — never commit here
+scripts/
+
 node_modules/
 dist/
 .env
