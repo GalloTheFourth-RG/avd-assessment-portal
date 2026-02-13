@@ -164,7 +164,7 @@ function Handle-StartAssessment {
     $config = $Body | ConvertFrom-Json
     $runId = "run-$(Get-Date -Format 'yyyyMMdd-HHmmss')-$([guid]::NewGuid().ToString().Substring(0,4))"
     
-    # Build parameter set
+    # Build parameter set as JSON to pass to subprocess
     $params = @{
         TenantId = $config.tenantId
         SubscriptionIds = @($config.subscriptionIds)
@@ -185,54 +185,20 @@ function Handle-StartAssessment {
     if ($config.companyName) { $params.CompanyName = $config.companyName }
     if ($config.analystName) { $params.AnalystName = $config.analystName }
     
-    # Start as background job
-    $jobScript = {
-        param($ScriptPath, $Params, $RunId, $StorageAccount, $StorageContainer, $ClientId)
-        
-        $ErrorActionPreference = "Stop"
-        $outputDir = Join-Path ([System.IO.Path]::GetTempPath()) $RunId
-        New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
-        
-        try {
-            # Thread jobs inherit the parent's Az context
-            # Verify we have a connection, reconnect only if needed
-            $azCtx = Get-AzContext -ErrorAction SilentlyContinue
-            if (-not $azCtx) {
-                if ($ClientId) {
-                    Connect-AzAccount -Identity -AccountId $ClientId -ErrorAction Stop | Out-Null
-                } else {
-                    Connect-AzAccount -Identity -ErrorAction Stop | Out-Null
-                }
-            }
-            
-            # Set output location
-            Push-Location $outputDir
-            
-            # Run the assessment
-            & $ScriptPath @Params
-            
-            Pop-Location
-            
-            # Upload results to blob storage
-            $ctx = New-AzStorageContext -StorageAccountName $StorageAccount -UseConnectedAccount
-            $files = Get-ChildItem -Path $outputDir -Recurse -File
-            foreach ($file in $files) {
-                $blobName = "$RunId/$($file.Name)"
-                Set-AzStorageBlobContent -File $file.FullName -Container $StorageContainer -Blob $blobName -Context $ctx -Force | Out-Null
-            }
-            
-            @{ status = "completed"; runId = $RunId; fileCount = $files.Count }
-        }
-        catch {
-            @{ status = "failed"; runId = $RunId; error = $_.Exception.Message }
-        }
-        finally {
-            if (Test-Path $outputDir) { Remove-Item $outputDir -Recurse -Force -ErrorAction SilentlyContinue }
-        }
-    }
+    $paramsJson = $params | ConvertTo-Json -Depth 5 -Compress
     
-    $job = Start-ThreadJob -ScriptBlock $jobScript -ArgumentList $script:ScriptPath, $params, $runId, $script:StorageAccount, $script:StorageContainer, $script:ClientId
-    $script:ActiveJobs[$runId] = @{ Job = $job; StartTime = Get-Date; Config = $config }
+    # Launch as a separate pwsh process (gets its own Az login)
+    $runnerScript = "/app/backend/src/run-assessment.ps1"
+    $proc = Start-Process -FilePath "pwsh" -ArgumentList @(
+        "-File", $runnerScript,
+        "-ParamsJson", "'$paramsJson'",
+        "-RunId", $runId,
+        "-StorageAccount", $script:StorageAccount,
+        "-StorageContainer", $script:StorageContainer,
+        "-ClientId", $script:ClientId
+    ) -PassThru -NoNewWindow -RedirectStandardOutput "/tmp/$runId-stdout.log" -RedirectStandardError "/tmp/$runId-stderr.log"
+    
+    $script:ActiveJobs[$runId] = @{ Process = $proc; StartTime = Get-Date; Config = $config }
     
     Send-JsonResponse -Response $Response -Data @{
         runId = $runId
@@ -253,39 +219,57 @@ function Handle-AssessmentStatus {
     }
     
     $jobInfo = $script:ActiveJobs[$RunId]
-    $job = $jobInfo.Job
+    $proc = $jobInfo.Process
     $elapsed = [math]::Round(((Get-Date) - $jobInfo.StartTime).TotalSeconds, 0)
     
-    if ($job.State -eq "Running") {
+    if (-not $proc.HasExited) {
         Send-JsonResponse -Response $Response -Data @{
             runId = $RunId
             status = "running"
             elapsedSeconds = $elapsed
         }
     }
-    elseif ($job.State -eq "Completed") {
-        $result = Receive-Job -Job $job
-        Remove-Job -Job $job -ErrorAction SilentlyContinue
-        $script:ActiveJobs.Remove($RunId)
-        
-        Send-JsonResponse -Response $Response -Data @{
-            runId = $RunId
-            status = $result.status ?? "completed"
-            elapsedSeconds = $elapsed
-            fileCount = $result.fileCount
-            error = $result.error
-        }
-    }
     else {
-        $errorMsg = if ($job.ChildJobs.Count -gt 0) { $job.ChildJobs[0].Error | Out-String } else { "Unknown error" }
-        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+        # Process finished — read output
+        $stdoutFile = "/tmp/$RunId-stdout.log"
+        $stderrFile = "/tmp/$RunId-stderr.log"
+        
+        $result = $null
+        if (Test-Path $stdoutFile) {
+            $stdout = Get-Content $stdoutFile -Raw
+            # Try to parse the last JSON line from stdout
+            $jsonLines = $stdout -split "`n" | Where-Object { $_.Trim().StartsWith('{') }
+            if ($jsonLines) {
+                $lastJson = $jsonLines[-1]
+                try { $result = $lastJson | ConvertFrom-Json } catch {}
+            }
+        }
+        
+        $stderrContent = if (Test-Path $stderrFile) { Get-Content $stderrFile -Raw } else { "" }
+        
+        # Clean up
+        Remove-Item $stdoutFile -Force -ErrorAction SilentlyContinue
+        Remove-Item $stderrFile -Force -ErrorAction SilentlyContinue
         $script:ActiveJobs.Remove($RunId)
         
-        Send-JsonResponse -Response $Response -Data @{
-            runId = $RunId
-            status = "failed"
-            elapsedSeconds = $elapsed
-            error = $errorMsg
+        if ($proc.ExitCode -eq 0 -and $result -and $result.status -eq "completed") {
+            Send-JsonResponse -Response $Response -Data @{
+                runId = $RunId
+                status = "completed"
+                elapsedSeconds = $elapsed
+                fileCount = $result.fileCount
+            }
+        }
+        else {
+            $errorMsg = if ($result -and $result.error) { $result.error } 
+                        elseif ($stderrContent) { $stderrContent.Substring(0, [math]::Min(500, $stderrContent.Length)) }
+                        else { "Process exited with code $($proc.ExitCode)" }
+            Send-JsonResponse -Response $Response -Data @{
+                runId = $RunId
+                status = "failed"
+                elapsedSeconds = $elapsed
+                error = $errorMsg
+            }
         }
     }
 }
