@@ -1,6 +1,6 @@
 // ============================================================================
 // AVD Assessment Portal — Resource Module
-// Container App (consumption) + Storage + Managed Identity
+// Container App + ACR + Storage + Managed Identity
 // ============================================================================
 
 param location string
@@ -8,7 +8,7 @@ param namePrefix string
 param targetSubscriptionIds string
 
 // ============================================================================
-// Managed Identity — used by Container App to access Azure APIs
+// Managed Identity
 // ============================================================================
 resource managedIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: '${namePrefix}-identity'
@@ -16,7 +16,19 @@ resource managedIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-
 }
 
 // ============================================================================
-// Storage Account — stores assessment results (HTML reports, CSVs, ZIPs)
+// Azure Container Registry (Basic tier — stores the portal image)
+// ============================================================================
+resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
+  name: '${namePrefix}acr'
+  location: location
+  sku: { name: 'Basic' }
+  properties: {
+    adminUserEnabled: true
+  }
+}
+
+// ============================================================================
+// Storage Account — assessment results
 // ============================================================================
 resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   name: '${namePrefix}store'
@@ -43,7 +55,7 @@ resource resultsContainer 'Microsoft.Storage/storageAccounts/blobServices/contai
   }
 }
 
-// Storage Blob Data Contributor for the managed identity
+// Storage Blob Data Contributor for managed identity
 resource storageBlobRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(storageAccount.id, managedIdentity.id, 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
   scope: storageAccount
@@ -55,7 +67,7 @@ resource storageBlobRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
 }
 
 // ============================================================================
-// Log Analytics Workspace — for Container App logs
+// Log Analytics Workspace — container logs
 // ============================================================================
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
   name: '${namePrefix}-logs'
@@ -67,7 +79,7 @@ resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
 }
 
 // ============================================================================
-// Container App Environment (consumption plan — scales to zero)
+// Container App Environment (consumption — scales to zero)
 // ============================================================================
 resource containerAppEnv 'Microsoft.App/managedEnvironments@2023-05-01' = {
   name: '${namePrefix}-env'
@@ -84,7 +96,7 @@ resource containerAppEnv 'Microsoft.App/managedEnvironments@2023-05-01' = {
 }
 
 // ============================================================================
-// Container App — runs the assessment portal
+// Container App — the assessment portal
 // ============================================================================
 resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
   name: '${namePrefix}-portal'
@@ -111,10 +123,9 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
       containers: [
         {
           name: 'portal'
-          // This image will be built and pushed via GitHub Actions
-          // For initial deployment, use a placeholder
+          // Placeholder image — replaced after ACR build (Step 2 in README)
           image: 'mcr.microsoft.com/azure-powershell:latest'
-          command: [ 'pwsh', '-File', '/app/backend/src/server.ps1' ]
+          command: [ 'pwsh', '-File', '/app/startup.ps1' ]
           resources: {
             cpu: json('1.0')
             memory: '2Gi'
@@ -152,3 +163,5 @@ output portalUrl string = 'https://${containerApp.properties.configuration.ingre
 output managedIdentityPrincipalId string = managedIdentity.properties.principalId
 output managedIdentityClientId string = managedIdentity.properties.clientId
 output storageAccountName string = storageAccount.name
+output acrName string = acr.name
+output acrLoginServer string = acr.properties.loginServer

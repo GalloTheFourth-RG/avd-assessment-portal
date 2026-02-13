@@ -4,16 +4,13 @@
     Enable Entra ID authentication (Easy Auth) on the AVD Assessment Portal.
 
 .DESCRIPTION
-    This creates an Entra ID App Registration and configures Azure Container Apps
-    built-in authentication so only authenticated users can access the portal.
+    Creates an Entra ID App Registration and configures Azure Container Apps
+    built-in authentication so only signed-in users can access the portal.
 
-    Run this AFTER the portal is deployed and working.
+    Run AFTER the portal is deployed and working.
 
 .EXAMPLE
     ./Setup-Auth.ps1 -ResourceGroup "rg-avd-assessment" -ContainerAppName "avdassess-portal"
-
-.NOTES
-    Requires: Az CLI with logged-in session that has permissions to create App Registrations.
 #>
 
 param(
@@ -29,85 +26,86 @@ Write-Host "╚═════════════════════�
 
 # Get the portal URL
 $fqdn = (az containerapp show -n $ContainerAppName -g $ResourceGroup --query "properties.configuration.ingress.fqdn" -o tsv)
-if (-not $fqdn) { throw "Container App not found" }
+if (-not $fqdn) { throw "Container App '$ContainerAppName' not found in resource group '$ResourceGroup'" }
 
 $portalUrl = "https://$fqdn"
+$tenantId = (az account show --query "tenantId" -o tsv)
 Write-Host "  Portal URL: $portalUrl" -ForegroundColor Gray
+Write-Host "  Tenant:     $tenantId" -ForegroundColor Gray
 
-# Step 1: Create App Registration
-Write-Host "`n── Step 1: Creating Entra ID App Registration ──" -ForegroundColor Yellow
+# ── Step 1: Create or find App Registration ──
+Write-Host "`n── Step 1: App Registration ──" -ForegroundColor Yellow
 
 $appName = "AVD Assessment Portal"
 $redirectUri = "$portalUrl/.auth/login/aad/callback"
 
-# Check if it already exists
-$existing = az ad app list --display-name $appName --query "[0].appId" -o tsv 2>$null
-if ($existing) {
-    Write-Host "  App Registration already exists: $existing" -ForegroundColor Green
-    $appId = $existing
+$appId = az ad app list --display-name $appName --query "[0].appId" -o tsv 2>$null
+if ($appId) {
+    Write-Host "  ✓ Found existing: $appId" -ForegroundColor Green
+    az ad app update --id $appId --web-redirect-uris $redirectUri | Out-Null
 } else {
-    $appJson = az ad app create `
+    $appId = (az ad app create `
         --display-name $appName `
         --web-redirect-uris $redirectUri `
         --sign-in-audience "AzureADMyOrg" `
-        --query "{appId:appId, id:id}" -o json | ConvertFrom-Json
-    
-    $appId = $appJson.appId
-    Write-Host "  ✓ Created App Registration: $appId" -ForegroundColor Green
+        --query "appId" -o tsv)
+    Write-Host "  ✓ Created: $appId" -ForegroundColor Green
 }
 
-# Step 2: Create client secret
-Write-Host "`n── Step 2: Creating Client Secret ──" -ForegroundColor Yellow
-$secretJson = az ad app credential reset --id $appId --display-name "portal-auth" --query "{password:password}" -o json | ConvertFrom-Json
-$clientSecret = $secretJson.password
-Write-Host "  ✓ Client secret created" -ForegroundColor Green
+# Enable ID token (required for Easy Auth callback)
+az ad app update --id $appId --enable-id-token-issuance true | Out-Null
+Write-Host "  ✓ ID token issuance enabled" -ForegroundColor Green
 
-# Step 3: Get Tenant ID
-$tenantId = (az account show --query "tenantId" -o tsv)
+# ── Step 2: Create client secret ──
+Write-Host "`n── Step 2: Client Secret ──" -ForegroundColor Yellow
+$clientSecret = (az ad app credential reset --id $appId --display-name "portal-auth" --query "password" -o tsv)
+Write-Host "  ✓ Secret created" -ForegroundColor Green
 
-# Step 4: Enable Easy Auth on Container App
-Write-Host "`n── Step 3: Enabling Easy Auth on Container App ──" -ForegroundColor Yellow
+# ── Step 3: Configure Easy Auth ──
+Write-Host "`n── Step 3: Container App Authentication ──" -ForegroundColor Yellow
 
+# Configure Microsoft provider (--issuer and --tenant-id cannot both be set)
 az containerapp auth microsoft update `
     -n $ContainerAppName `
     -g $ResourceGroup `
     --client-id $appId `
     --client-secret $clientSecret `
-    --tenant-id $tenantId `
-    --issuer "https://sts.windows.net/$tenantId/v2.0" `
-    --yes 2>$null
+    --issuer "https://login.microsoftonline.com/$tenantId/v2.0" `
+    --yes | Out-Null
 
-# Enable auth and set to require authentication
+Write-Host "  ✓ Microsoft provider configured" -ForegroundColor Green
+
+# Enable auth — redirect unauthenticated users to login
 az containerapp auth update `
     -n $ContainerAppName `
     -g $ResourceGroup `
-    --unauthenticated-client-action "RedirectToLoginPage" `
-    --enabled true 2>$null
+    --unauthenticated-client-action RedirectToLoginPage `
+    --enabled true | Out-Null
 
-# Set REQUIRE_AUTH env var so the backend validates headers
-az containerapp update `
-    -n $ContainerAppName `
-    -g $ResourceGroup `
-    --set-env-vars "REQUIRE_AUTH=true" 2>$null
+Write-Host "  ✓ Authentication enabled" -ForegroundColor Green
 
-Write-Host "  ✓ Easy Auth enabled" -ForegroundColor Green
+# Restart to pick up secret
+$revision = (az containerapp revision list -n $ContainerAppName -g $ResourceGroup --query "[0].name" -o tsv)
+if ($revision) {
+    az containerapp revision restart -n $ContainerAppName -g $ResourceGroup --revision $revision 2>$null
+    Write-Host "  ✓ Container restarted (may take 30-60s)" -ForegroundColor Green
+}
 
-# Summary
+# ── Summary ──
 Write-Host "`n══════════════════════════════════════════════════════════════" -ForegroundColor Green
-Write-Host "  ✅ Authentication configured!" -ForegroundColor Green
+Write-Host "  ✅ Entra ID authentication configured!" -ForegroundColor Green
 Write-Host ""
 Write-Host "  App Registration:  $appId" -ForegroundColor Gray
 Write-Host "  Tenant:            $tenantId" -ForegroundColor Gray
 Write-Host "  Portal:            $portalUrl" -ForegroundColor Gray
 Write-Host ""
-Write-Host "  Users in your tenant will be prompted to sign in with" -ForegroundColor White
-Write-Host "  their Entra ID credentials before accessing the portal." -ForegroundColor White
+Write-Host "  All users in your tenant can now sign in." -ForegroundColor White
 Write-Host ""
-Write-Host "  To restrict to specific users/groups, go to:" -ForegroundColor Gray
-Write-Host "  Azure Portal → Entra ID → Enterprise Apps → $appName" -ForegroundColor Gray
-Write-Host "  → Properties → Assignment Required = Yes" -ForegroundColor Gray
-Write-Host "  Then add users/groups under 'Users and groups'" -ForegroundColor Gray
+Write-Host "  To restrict to specific users/groups:" -ForegroundColor Yellow
+Write-Host "    Azure Portal → Entra ID → Enterprise Applications" -ForegroundColor Gray
+Write-Host "    → '$appName' → Properties → Assignment Required = Yes" -ForegroundColor Gray
+Write-Host "    → Users and groups → Add the allowed users/groups" -ForegroundColor Gray
 Write-Host ""
-Write-Host "  To disable auth later:" -ForegroundColor Gray
-Write-Host "  az containerapp auth update -n $ContainerAppName -g $ResourceGroup --enabled false" -ForegroundColor Gray
+Write-Host "  To disable auth:" -ForegroundColor Yellow
+Write-Host "    az containerapp auth update -n $ContainerAppName -g $ResourceGroup --enabled false" -ForegroundColor Gray
 Write-Host "══════════════════════════════════════════════════════════════`n" -ForegroundColor Green
