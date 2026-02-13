@@ -129,6 +129,10 @@ function Send-StaticFile {
 # ============================================================================
 function Handle-Health {
     param($Response)
+    $tenantId = $null
+    if ($script:AzConnected) {
+        try { $tenantId = (Get-AzContext).Tenant.Id } catch {}
+    }
     $data = @{
         status = "healthy"
         timestamp = (Get-Date -Format "o")
@@ -136,6 +140,7 @@ function Handle-Health {
         storageConfigured = (-not [string]::IsNullOrEmpty($script:StorageAccount))
         identityConfigured = (-not [string]::IsNullOrEmpty($script:ClientId))
         azureConnected = $script:AzConnected
+        tenantId = $tenantId
     }
     Send-JsonResponse -Response $Response -Data $data
 }
@@ -191,18 +196,14 @@ function Handle-StartAssessment {
     $paramsFile = "/tmp/$runId-params.json"
     $paramsJson | Set-Content -Path $paramsFile -Encoding UTF8
     
-    # Launch as a separate pwsh process (gets its own Az login)
-    $runnerScript = "/app/backend/src/run-assessment.ps1"
-    $proc = Start-Process -FilePath "pwsh" -ArgumentList @(
-        "-File", $runnerScript,
-        "-ParamsFile", $paramsFile,
-        "-RunId", $runId,
-        "-StorageAccount", $script:StorageAccount,
-        "-StorageContainer", $script:StorageContainer,
-        "-ClientId", $script:ClientId
-    ) -PassThru -NoNewWindow -RedirectStandardOutput "/tmp/$runId-stdout.log" -RedirectStandardError "/tmp/$runId-stderr.log"
+    # Write a status marker so we can track this run
+    @{ status = "running"; startTime = (Get-Date -Format "o") } | ConvertTo-Json | Set-Content "/tmp/$runId-status.json"
     
-    $script:ActiveJobs[$runId] = @{ Process = $proc; StartTime = Get-Date; Config = $config }
+    # Launch as a separate pwsh process in background
+    # Uses & (background operator) at the OS level via bash
+    $runnerScript = "/app/backend/src/run-assessment.ps1"
+    $bashCmd = "pwsh -File '$runnerScript' -ParamsFile '$paramsFile' -RunId '$runId' -StorageAccount '$($script:StorageAccount)' -StorageContainer '$($script:StorageContainer)' -ClientId '$($script:ClientId)' > /tmp/$runId-stdout.log 2>/tmp/$runId-stderr.log &"
+    bash -c $bashCmd
     
     Send-JsonResponse -Response $Response -Data @{
         runId = $runId
@@ -217,42 +218,38 @@ function Handle-StartAssessment {
 function Handle-AssessmentStatus {
     param($Response, [string]$RunId)
     
-    if (-not $script:ActiveJobs.ContainsKey($RunId)) {
+    $statusFile = "/tmp/$RunId-status.json"
+    $resultFile = "/tmp/$RunId-result.json"
+    $stderrFile = "/tmp/$RunId-stderr.log"
+    $stdoutFile = "/tmp/$RunId-stdout.log"
+    
+    # Check if this run exists at all
+    if (-not (Test-Path $statusFile) -and -not (Test-Path $resultFile)) {
         Send-JsonResponse -Response $Response -Data @{ error = "Run not found"; runId = $RunId } -StatusCode 404
         return
     }
     
-    $jobInfo = $script:ActiveJobs[$RunId]
-    $proc = $jobInfo.Process
-    $elapsed = [math]::Round(((Get-Date) - $jobInfo.StartTime).TotalSeconds, 0)
-    
-    if (-not $proc.HasExited) {
-        Send-JsonResponse -Response $Response -Data @{
-            runId = $RunId
-            status = "running"
-            elapsedSeconds = $elapsed
-        }
+    $startTime = Get-Date
+    if (Test-Path $statusFile) {
+        try {
+            $statusData = Get-Content $statusFile -Raw | ConvertFrom-Json
+            $startTime = [datetime]$statusData.startTime
+        } catch {}
     }
-    else {
-        # Process finished — read result file
-        $resultFile = "/tmp/$RunId-result.json"
-        $stdoutFile = "/tmp/$RunId-stdout.log"
-        $stderrFile = "/tmp/$RunId-stderr.log"
-        
+    $elapsed = [math]::Round(((Get-Date) - $startTime).TotalSeconds, 0)
+    
+    # Check if result file exists (process finished)
+    if (Test-Path $resultFile) {
         $result = $null
-        if (Test-Path $resultFile) {
-            try { $result = Get-Content $resultFile -Raw | ConvertFrom-Json } catch {}
-        }
-        
-        $stderrContent = if (Test-Path $stderrFile) { Get-Content $stderrFile -Raw } else { "" }
-        
-        # Clean up
-        Remove-Item $resultFile -Force -ErrorAction SilentlyContinue
-        Remove-Item $stdoutFile -Force -ErrorAction SilentlyContinue
-        Remove-Item $stderrFile -Force -ErrorAction SilentlyContinue
-        $script:ActiveJobs.Remove($RunId)
+        try { $result = Get-Content $resultFile -Raw | ConvertFrom-Json } catch {}
         
         if ($result -and $result.status -eq "completed") {
+            # Clean up
+            Remove-Item $statusFile -Force -ErrorAction SilentlyContinue
+            Remove-Item $resultFile -Force -ErrorAction SilentlyContinue
+            Remove-Item $stderrFile -Force -ErrorAction SilentlyContinue
+            Remove-Item $stdoutFile -Force -ErrorAction SilentlyContinue
+            
             Send-JsonResponse -Response $Response -Data @{
                 runId = $RunId
                 status = "completed"
@@ -260,20 +257,52 @@ function Handle-AssessmentStatus {
                 fileCount = $result.fileCount
             }
         }
-        elseif ($result -and $result.error) {
+        else {
+            $errorMsg = if ($result -and $result.error) { $result.error } else { "Unknown error" }
+            
+            # Clean up
+            Remove-Item $statusFile -Force -ErrorAction SilentlyContinue
+            Remove-Item $resultFile -Force -ErrorAction SilentlyContinue
+            Remove-Item $stderrFile -Force -ErrorAction SilentlyContinue
+            Remove-Item $stdoutFile -Force -ErrorAction SilentlyContinue
+            
             Send-JsonResponse -Response $Response -Data @{
                 runId = $RunId
                 status = "failed"
                 elapsedSeconds = $elapsed
-                error = $result.error
+                error = $errorMsg
+            }
+        }
+    }
+    else {
+        # No result yet — still running (or crashed without writing result)
+        # Check if the process is still alive
+        $processAlive = $false
+        try {
+            $psProcs = bash -c "ps aux | grep '$RunId' | grep -v grep"
+            $processAlive = -not [string]::IsNullOrWhiteSpace($psProcs)
+        } catch {}
+        
+        if ($processAlive) {
+            Send-JsonResponse -Response $Response -Data @{
+                runId = $RunId
+                status = "running"
+                elapsedSeconds = $elapsed
             }
         }
         else {
-            # No result file — check stderr and stdout for clues
-            $stdoutContent = if (Test-Path "/tmp/$RunId-stdout.log") { Get-Content "/tmp/$RunId-stdout.log" -Raw -ErrorAction SilentlyContinue } else { "" }
-            $errorMsg = if ($stderrContent) { $stderrContent.Substring(0, [math]::Min(500, $stderrContent.Length)) }
-                        elseif ($stdoutContent) { "Process output: " + $stdoutContent.Substring(0, [math]::Min(500, $stdoutContent.Length)) }
-                        else { "Process exited with code $($proc.ExitCode) but no result or error output found" }
+            # Process died without writing result — grab stderr
+            $errorMsg = "Assessment process terminated unexpectedly"
+            if (Test-Path $stderrFile) {
+                $stderr = Get-Content $stderrFile -Raw
+                if ($stderr) { $errorMsg = $stderr.Substring(0, [math]::Min(500, $stderr.Length)) }
+            }
+            
+            # Clean up
+            Remove-Item $statusFile -Force -ErrorAction SilentlyContinue
+            Remove-Item $stderrFile -Force -ErrorAction SilentlyContinue
+            Remove-Item $stdoutFile -Force -ErrorAction SilentlyContinue
+            
             Send-JsonResponse -Response $Response -Data @{
                 runId = $RunId
                 status = "failed"

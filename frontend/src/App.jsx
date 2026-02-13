@@ -559,7 +559,10 @@ export default function App() {
   
   // Init: check health & load subs
   useEffect(() => {
-    api.health().then(setHealth).catch(() => setHealth({ status: 'error' }))
+    api.health().then(h => { 
+      setHealth(h)
+      if (h.tenantId && !tenantId) setTenantId(h.tenantId)
+    }).catch(() => setHealth({ status: 'error' }))
     api.subscriptions()
       .then(d => { if (d.subscriptions) setSubs(d.subscriptions) })
       .catch(() => {})
@@ -700,7 +703,7 @@ export default function App() {
                 </div>
                 
                 <div className="form-group">
-                  <label className="form-label">Tenant ID</label>
+                  <label className="form-label">Tenant ID {health?.tenantId ? <span style={{color:'var(--success)', fontWeight: 400}}>(auto-detected)</span> : ''}</label>
                   <input 
                     className="form-input" 
                     placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
