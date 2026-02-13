@@ -747,6 +747,17 @@
         • Frontline: concurrent users × Frontline price
         • Personal pools: assigned users × W365 price
         • New "Users" and "W365 Licenses" columns in HTML table
+      IMPROVED: W365 plan matching now workload-aware
+        • Pooled Desktop: matches on per-user resources (RAM ÷ users), not total VM spec
+        • RemoteApp: lighter per-user sizing (2 vCPU / 2-4 GB) → matches Frontline plans
+        • Personal: matches on full VM spec (1:1, correct)
+        • Usage-based plan shown alongside spec-matched in HTML table
+        • Prevents inflated W365 pricing (e.g., $184 for E8ads_v6 → $38 per-user)
+      IMPROVED: Per-user cost calculation uses Log Analytics unique users
+        • Pooled pools: falls back to LA dcount(UserName) instead of VM count
+        • 4-tier priority: Assigned → LA unique users → Active sessions → VM count
+        • User count source displayed in HTML table (Assigned / Log Analytics / Active)
+        • Fuzzy host pool name matching for KQL data (handles short vs full name)
       IMPROVED: Reservation analysis filtered to AVD-relevant SKUs
         • Existing Reservations table shows only RIs matching AVD VM sizes
         • New "AVD VMs" and "Coverage" columns per reservation
