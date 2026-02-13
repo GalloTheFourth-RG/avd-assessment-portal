@@ -1988,9 +1988,18 @@ if (-not $SkipDisclaimer) {
 # =========================================================
 # Authentication
 # =========================================================
-Disable-AzContextAutosave -Scope Process | Out-Null
-Clear-AzContext -Scope Process -Force -ErrorAction SilentlyContinue | Out-Null
-Connect-AzAccount -TenantId $TenantId | Out-Null
+# Check if we're already logged in with a managed identity (e.g., running in Azure Container App)
+$existingContext = Get-AzContext -ErrorAction SilentlyContinue
+$isManagedIdentity = $existingContext -and $existingContext.Account.Type -eq 'ManagedService'
+
+if ($isManagedIdentity) {
+    Write-Host "  ✓ Using existing Managed Identity connection" -ForegroundColor Green
+    Write-Host "    Tenant: $($existingContext.Tenant.Id)" -ForegroundColor Gray
+} else {
+    Disable-AzContextAutosave -Scope Process | Out-Null
+    Clear-AzContext -Scope Process -Force -ErrorAction SilentlyContinue | Out-Null
+    Connect-AzAccount -TenantId $TenantId | Out-Null
+}
 
 # =========================================================
 # DRY RUN MODE
