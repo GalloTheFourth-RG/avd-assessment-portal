@@ -19,6 +19,30 @@ $script:ClientId = $env:AZURE_CLIENT_ID
 $script:ScriptPath = "/app/scripts/Get-Enhanced-AVD-EvidencePack.ps1"
 $script:FrontendPath = "/app/frontend/dist"
 $script:ActiveJobs = @{}
+$script:AzConnected = $false
+
+# ============================================================================
+# Connect to Azure on startup using Managed Identity
+# ============================================================================
+Write-Host "  Connecting to Azure..." -ForegroundColor Gray
+Write-Host "  AZURE_CLIENT_ID: $(if ($script:ClientId) { $script:ClientId } else { 'NOT SET' })" -ForegroundColor Gray
+try {
+    if ($script:ClientId) {
+        Connect-AzAccount -Identity -AccountId $script:ClientId -ErrorAction Stop | Out-Null
+        Write-Host "  ✓ Connected with user-assigned managed identity" -ForegroundColor Green
+    } else {
+        # Try system-assigned identity as fallback
+        Connect-AzAccount -Identity -ErrorAction Stop | Out-Null
+        Write-Host "  ✓ Connected with system-assigned managed identity" -ForegroundColor Green
+    }
+    $script:AzConnected = $true
+    $ctx = Get-AzContext
+    Write-Host "  ✓ Tenant: $($ctx.Tenant.Id)" -ForegroundColor Green
+} catch {
+    Write-Host "  ⚠ Azure login failed: $($_.Exception.Message)" -ForegroundColor Yellow
+    Write-Host "  The portal will start but Azure API calls will fail." -ForegroundColor Yellow
+    Write-Host "  Check that AZURE_CLIENT_ID is set and the managed identity is assigned to this Container App." -ForegroundColor Yellow
+}
 
 # ============================================================================
 # MIME types for static file serving
@@ -92,6 +116,7 @@ function Handle-Health {
         scriptExists = (Test-Path $script:ScriptPath)
         storageConfigured = (-not [string]::IsNullOrEmpty($script:StorageAccount))
         identityConfigured = (-not [string]::IsNullOrEmpty($script:ClientId))
+        azureConnected = $script:AzConnected
     }
     Send-JsonResponse -Response $Response -Data $data
 }
@@ -102,8 +127,7 @@ function Handle-Health {
 function Handle-ListSubscriptions {
     param($Response)
     try {
-        # Connect using managed identity
-        Connect-AzAccount -Identity -AccountId $script:ClientId -ErrorAction Stop | Out-Null
+        if (-not $script:AzConnected) { throw "Not connected to Azure. Check managed identity configuration." }
         $subs = Get-AzSubscription -ErrorAction Stop | Select-Object @{N='id';E={$_.SubscriptionId}}, @{N='name';E={$_.Name}}, @{N='state';E={$_.State}}
         Send-JsonResponse -Response $Response -Data @{ subscriptions = @($subs) }
     }
