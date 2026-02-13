@@ -53,7 +53,7 @@ A self-hosted web portal that runs the Enhanced AVD Evidence Pack inside your Az
 
 **Option A: One-click deploy**
 
-[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FYOUR-ACTUAL-GITHUB-USERNAME%2Favd-assessment-portal%2Fmain%2Fazuredeploy.json)
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fgallothefourth-rg%2Favd-assessment-portal%2Fmain%2Fazuredeploy.json)
 
 > After clicking, choose a resource group (or create `rg-avd-assessment`), set a unique **namePrefix**, and click **Review + Create**.
 
@@ -84,7 +84,7 @@ This creates:
 
 ```powershell
 # Clone the repo (skip if you already have it)
-git clone https://github.com/YOUR-ACTUAL-GITHUB-USERNAME/avd-assessment-portal.git
+git clone https://github.com/gallothefourth-rg/avd-assessment-portal.git
 cd avd-assessment-portal
 
 # Enable ACR admin (needed for Container App image pull)
