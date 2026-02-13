@@ -1,14 +1,14 @@
 #!/usr/bin/env pwsh
 <#
-    Assessment runner — called by the portal server as a subprocess.
-    Handles its own Az login and runs the evidence pack script.
+    Assessment runner — loads saved Az profile and runs the evidence pack.
+    Called as a background process by the portal server.
 #>
 param(
     [string]$ParamsFile,
     [string]$RunId,
     [string]$StorageAccount,
     [string]$StorageContainer,
-    [string]$ClientId
+    [string]$AzProfilePath
 )
 
 $ErrorActionPreference = "Stop"
@@ -17,30 +17,35 @@ $outputDir = Join-Path ([System.IO.Path]::GetTempPath()) $RunId
 New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
 
 try {
-    Write-Host "[$RunId] Connecting to Azure..."
-    if ($ClientId) {
-        Connect-AzAccount -Identity -AccountId $ClientId -ErrorAction Stop | Out-Null
+    Write-Host "[$RunId] Loading Az profile from $AzProfilePath..."
+    if (Test-Path $AzProfilePath) {
+        Import-AzContext -Path $AzProfilePath -ErrorAction Stop | Out-Null
+        Write-Host "[$RunId] ✓ Az context loaded"
     } else {
-        Connect-AzAccount -Identity -ErrorAction Stop | Out-Null
+        throw "Az profile not found at $AzProfilePath"
     }
-    Write-Host "[$RunId] Connected."
+    
+    $azCtx = Get-AzContext
+    Write-Host "[$RunId] Tenant: $($azCtx.Tenant.Id), Account: $($azCtx.Account.Id)"
 
     # Read parameters from file
     $raw = Get-Content $ParamsFile -Raw | ConvertFrom-Json
     $params = @{}
     foreach ($prop in $raw.PSObject.Properties) {
         $val = $prop.Value
-        # Convert JSON arrays back to PowerShell string arrays
         if ($val -is [System.Object[]]) { $val = [string[]]@($val) }
         $params[$prop.Name] = $val
     }
-    # Clean up params file
     Remove-Item $ParamsFile -Force -ErrorAction SilentlyContinue
 
     Write-Host "[$RunId] Running assessment in $outputDir..."
     Push-Location $outputDir
     & /app/scripts/Get-Enhanced-AVD-EvidencePack.ps1 @params
     Pop-Location
+
+    # Re-load the profile since the script may have trashed the context
+    Write-Host "[$RunId] Re-loading Az profile for upload..."
+    Import-AzContext -Path $AzProfilePath -ErrorAction Stop | Out-Null
 
     # Upload results
     Write-Host "[$RunId] Uploading results..."

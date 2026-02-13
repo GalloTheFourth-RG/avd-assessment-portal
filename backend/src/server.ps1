@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
-    AVD Assessment Portal — Backend HTTP Server
-    Lightweight PowerShell HTTP listener that serves the frontend and handles assessment API calls.
+    AVD Assessment Portal — Backend HTTP Server v2.0.0
+    PowerShell HTTP listener: frontend serving, assessment API, Entra ID auth support.
 #>
 
 param(
@@ -18,14 +18,13 @@ $script:StorageContainer = $env:STORAGE_CONTAINER ?? "results"
 $script:ClientId = $env:AZURE_CLIENT_ID
 $script:ScriptPath = "/app/scripts/Get-Enhanced-AVD-EvidencePack.ps1"
 $script:FrontendPath = "/app/frontend/dist"
-$script:ActiveJobs = @{}
 $script:AzConnected = $false
+$script:AzProfilePath = "/tmp/az-profile.json"
 
 # ============================================================================
-# Connect to Azure on startup using Managed Identity
+# Azure Authentication — Managed Identity
 # ============================================================================
 function Ensure-AzLogin {
-    # Re-establish managed identity login (assessment script may overwrite context)
     try {
         if ($script:ClientId) {
             Connect-AzAccount -Identity -AccountId $script:ClientId -ErrorAction Stop | Out-Null
@@ -33,6 +32,9 @@ function Ensure-AzLogin {
             Connect-AzAccount -Identity -ErrorAction Stop | Out-Null
         }
         $script:AzConnected = $true
+        
+        # Save profile so child processes can reuse it
+        Save-AzContext -Path $script:AzProfilePath -Force -ErrorAction SilentlyContinue | Out-Null
         
         # Refresh storage context
         if ($script:StorageAccount) {
@@ -56,6 +58,19 @@ if (Ensure-AzLogin) {
 }
 
 # ============================================================================
+# Entra ID Easy Auth — validate X-MS-CLIENT-PRINCIPAL header
+# ============================================================================
+$script:RequireAuth = $env:REQUIRE_AUTH -eq "true"
+
+function Test-AuthHeader {
+    param($Request)
+    if (-not $script:RequireAuth) { return $true }
+    $principal = $Request.Headers["X-MS-CLIENT-PRINCIPAL-ID"]
+    if (-not $principal) { return $false }
+    return $true
+}
+
+# ============================================================================
 # MIME types for static file serving
 # ============================================================================
 $mimeTypes = @{
@@ -68,6 +83,9 @@ $mimeTypes = @{
     ".ico"  = "image/x-icon"
     ".woff2" = "font/woff2"
     ".woff" = "font/woff"
+    ".txt"  = "text/plain"
+    ".csv"  = "text/csv"
+    ".zip"  = "application/zip"
 }
 
 # ============================================================================
@@ -98,7 +116,6 @@ function Send-StaticFile {
         $Response.ContentLength64 = $bytes.Length
         $Response.OutputStream.Write($bytes, 0, $bytes.Length)
     } else {
-        # SPA fallback — serve index.html for client-side routing
         $indexPath = Join-Path $script:FrontendPath "index.html"
         if (Test-Path $indexPath) {
             $bytes = [System.IO.File]::ReadAllBytes($indexPath)
@@ -116,6 +133,11 @@ function Send-StaticFile {
     $Response.OutputStream.Close()
 }
 
+function Send-Unauthorized {
+    param($Response)
+    Send-JsonResponse -Response $Response -Data @{ error = "Authentication required. Please sign in." } -StatusCode 401
+}
+
 # ============================================================================
 # API: GET /api/health
 # ============================================================================
@@ -128,7 +150,7 @@ function Handle-Health {
             $tenantId = if ($azCtx) { $azCtx.Tenant.Id } else { $null }
         } catch {}
     }
-    $data = @{
+    Send-JsonResponse -Response $Response -Data @{
         status = "healthy"
         timestamp = (Get-Date -Format "o")
         scriptExists = (Test-Path $script:ScriptPath)
@@ -136,12 +158,12 @@ function Handle-Health {
         identityConfigured = (-not [string]::IsNullOrEmpty($script:ClientId))
         azureConnected = $script:AzConnected
         tenantId = $tenantId
+        authRequired = $script:RequireAuth
     }
-    Send-JsonResponse -Response $Response -Data $data
 }
 
 # ============================================================================
-# API: GET /api/subscriptions — List accessible subscriptions
+# API: GET /api/subscriptions
 # ============================================================================
 function Handle-ListSubscriptions {
     param($Response)
@@ -156,7 +178,7 @@ function Handle-ListSubscriptions {
 }
 
 # ============================================================================
-# API: POST /api/assess — Start an assessment run
+# API: POST /api/assess — Start assessment (async via saved Az profile)
 # ============================================================================
 function Handle-StartAssessment {
     param($Response, $Body)
@@ -164,7 +186,6 @@ function Handle-StartAssessment {
     $config = $Body | ConvertFrom-Json
     $runId = "run-$(Get-Date -Format 'yyyyMMdd-HHmmss')-$([guid]::NewGuid().ToString().Substring(0,4))"
     
-    # Build parameter set
     $params = @{
         TenantId = $config.tenantId
         SubscriptionIds = @($config.subscriptionIds)
@@ -185,47 +206,26 @@ function Handle-StartAssessment {
     if ($config.companyName) { $params.CompanyName = $config.companyName }
     if ($config.analystName) { $params.AnalystName = $config.analystName }
     
-    $outputDir = Join-Path ([System.IO.Path]::GetTempPath()) $runId
-    New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+    # Ensure fresh Az profile saved for child process
+    Ensure-AzLogin | Out-Null
     
-    try {
-        Write-Host "  [$runId] Starting assessment (blocking)..." -ForegroundColor Cyan
-        
-        Push-Location $outputDir
-        & $script:ScriptPath @params
-        Pop-Location
-        
-        # Re-login — the assessment script calls Connect-AzAccount internally which trashes our managed identity context
-        Write-Host "  [$runId] Re-establishing managed identity login..." -ForegroundColor Cyan
-        Ensure-AzLogin | Out-Null
-        
-        # Upload results to blob storage
-        Write-Host "  [$runId] Uploading results..." -ForegroundColor Cyan
-        $files = Get-ChildItem -Path $outputDir -Recurse -File
-        foreach ($file in $files) {
-            $blobName = "$runId/$($file.Name)"
-            Set-AzStorageBlobContent -File $file.FullName -Container $script:StorageContainer -Blob $blobName -Context $script:StorageCtx -Force | Out-Null
-        }
-        
-        Write-Host "  [$runId] Complete! $($files.Count) files." -ForegroundColor Green
-        Send-JsonResponse -Response $Response -Data @{
-            runId = $runId
-            status = "completed"
-            fileCount = $files.Count
-        }
-    }
-    catch {
-        Write-Host "  [$runId] FAILED: $($_.Exception.Message)" -ForegroundColor Red
-        # Re-login even on failure so subsequent API calls work
-        Ensure-AzLogin | Out-Null
-        Send-JsonResponse -Response $Response -Data @{
-            runId = $runId
-            status = "failed"
-            error = $_.Exception.Message
-        }
-    }
-    finally {
-        if (Test-Path $outputDir) { Remove-Item $outputDir -Recurse -Force -ErrorAction SilentlyContinue }
+    # Write params + status
+    $params | ConvertTo-Json -Depth 5 | Set-Content "/tmp/$runId-params.json" -Encoding UTF8
+    @{ status = "running"; startTime = (Get-Date -Format "o") } | ConvertTo-Json | Set-Content "/tmp/$runId-status.json"
+    
+    # Launch via bash background — child process loads saved Az profile
+    $runnerScript = "/app/backend/src/run-assessment.ps1"
+    $launchCmd = "#!/bin/bash`npwsh -File '$runnerScript' -ParamsFile '/tmp/$runId-params.json' -RunId '$runId' -StorageAccount '$($script:StorageAccount)' -StorageContainer '$($script:StorageContainer)' -AzProfilePath '$($script:AzProfilePath)' > '/tmp/$runId-stdout.log' 2>'/tmp/$runId-stderr.log'"
+    [System.IO.File]::WriteAllText("/tmp/$runId-launch.sh", $launchCmd)
+    
+    bash -c "chmod +x /tmp/$runId-launch.sh && nohup /tmp/$runId-launch.sh &"
+    
+    Write-Host "  [$runId] Assessment launched (async)" -ForegroundColor Cyan
+    
+    Send-JsonResponse -Response $Response -Data @{
+        runId = $runId
+        status = "started"
+        message = "Assessment started. Poll /api/assess/$runId for status."
     }
 }
 
@@ -240,7 +240,6 @@ function Handle-AssessmentStatus {
     $stderrFile = "/tmp/$RunId-stderr.log"
     $stdoutFile = "/tmp/$RunId-stdout.log"
     
-    # Check if this run exists at all
     if (-not (Test-Path $statusFile) -and -not (Test-Path $resultFile)) {
         Send-JsonResponse -Response $Response -Data @{ error = "Run not found"; runId = $RunId } -StatusCode 404
         return
@@ -255,18 +254,18 @@ function Handle-AssessmentStatus {
     }
     $elapsed = [math]::Round(((Get-Date) - $startTime).TotalSeconds, 0)
     
-    # Check if result file exists (process finished)
     if (Test-Path $resultFile) {
         $result = $null
         try { $result = Get-Content $resultFile -Raw | ConvertFrom-Json } catch {}
         
+        # Clean up
+        @($statusFile, $resultFile, $stderrFile, $stdoutFile, "/tmp/$RunId-launch.sh", "/tmp/$RunId-params.json") |
+            ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }
+        
+        # Restore managed identity after assessment trashed the context
+        Ensure-AzLogin | Out-Null
+        
         if ($result -and $result.status -eq "completed") {
-            # Clean up
-            Remove-Item $statusFile -Force -ErrorAction SilentlyContinue
-            Remove-Item $resultFile -Force -ErrorAction SilentlyContinue
-            Remove-Item $stderrFile -Force -ErrorAction SilentlyContinue
-            Remove-Item $stdoutFile -Force -ErrorAction SilentlyContinue
-            
             Send-JsonResponse -Response $Response -Data @{
                 runId = $RunId
                 status = "completed"
@@ -275,29 +274,20 @@ function Handle-AssessmentStatus {
             }
         }
         else {
-            $errorMsg = if ($result -and $result.error) { $result.error } else { "Unknown error" }
-            
-            # Clean up
-            Remove-Item $statusFile -Force -ErrorAction SilentlyContinue
-            Remove-Item $resultFile -Force -ErrorAction SilentlyContinue
-            Remove-Item $stderrFile -Force -ErrorAction SilentlyContinue
-            Remove-Item $stdoutFile -Force -ErrorAction SilentlyContinue
-            
             Send-JsonResponse -Response $Response -Data @{
                 runId = $RunId
                 status = "failed"
                 elapsedSeconds = $elapsed
-                error = $errorMsg
+                error = if ($result -and $result.error) { $result.error } else { "Unknown error" }
             }
         }
     }
     else {
-        # No result yet — still running (or crashed without writing result)
-        # Check if the process is still alive
+        # Check if process still alive
         $processAlive = $false
         try {
-            $psProcs = bash -c "ps aux | grep '$RunId' | grep -v grep"
-            $processAlive = -not [string]::IsNullOrWhiteSpace($psProcs)
+            $psCheck = bash -c "ps aux | grep '$RunId' | grep -v grep" 2>$null
+            $processAlive = -not [string]::IsNullOrWhiteSpace($psCheck)
         } catch {}
         
         if ($processAlive) {
@@ -308,17 +298,14 @@ function Handle-AssessmentStatus {
             }
         }
         else {
-            # Process died without writing result — grab stderr
             $errorMsg = "Assessment process terminated unexpectedly"
             if (Test-Path $stderrFile) {
                 $stderr = Get-Content $stderrFile -Raw
                 if ($stderr) { $errorMsg = $stderr.Substring(0, [math]::Min(500, $stderr.Length)) }
             }
             
-            # Clean up
-            Remove-Item $statusFile -Force -ErrorAction SilentlyContinue
-            Remove-Item $stderrFile -Force -ErrorAction SilentlyContinue
-            Remove-Item $stdoutFile -Force -ErrorAction SilentlyContinue
+            @($statusFile, $stderrFile, $stdoutFile, "/tmp/$RunId-launch.sh", "/tmp/$RunId-params.json") |
+                ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }
             
             Send-JsonResponse -Response $Response -Data @{
                 runId = $RunId
@@ -336,6 +323,7 @@ function Handle-AssessmentStatus {
 function Handle-ListResults {
     param($Response, [string]$RunId)
     try {
+        Ensure-AzLogin | Out-Null
         $ctx = $script:StorageCtx; if (-not $ctx) { throw "Storage not configured" }
         $blobs = Get-AzStorageBlob -Container $script:StorageContainer -Prefix "$RunId/" -Context $ctx
         $prefix = "^$RunId/"
@@ -361,6 +349,7 @@ function Handle-ListResults {
 function Handle-DownloadResult {
     param($Response, [string]$RunId, [string]$FileName)
     try {
+        Ensure-AzLogin | Out-Null
         $ctx = $script:StorageCtx; if (-not $ctx) { throw "Storage not configured" }
         $blobName = "$RunId/$FileName"
         $tempFile = Join-Path ([System.IO.Path]::GetTempPath()) $FileName
@@ -386,11 +375,12 @@ function Handle-DownloadResult {
 }
 
 # ============================================================================
-# API: GET /api/runs — List past assessment runs
+# API: GET /api/runs — List past runs
 # ============================================================================
 function Handle-ListRuns {
     param($Response)
     try {
+        Ensure-AzLogin | Out-Null
         $ctx = $script:StorageCtx; if (-not $ctx) { throw "Storage not configured" }
         $blobs = Get-AzStorageBlob -Container $script:StorageContainer -Context $ctx
         $runs = @{}
@@ -417,12 +407,13 @@ function Handle-ListRuns {
 # Main HTTP Listener
 # ============================================================================
 Write-Host "`n╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║  AVD Assessment Portal — Server v1.0.0                      ║" -ForegroundColor Cyan
+Write-Host "║  AVD Assessment Portal — Server v2.0.0                      ║" -ForegroundColor Cyan
 Write-Host "╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
 Write-Host "  Port:     $Port" -ForegroundColor Gray
 Write-Host "  Script:   $(if (Test-Path $script:ScriptPath) { '✓ Found' } else { '✗ Missing!' })" -ForegroundColor $(if (Test-Path $script:ScriptPath) { 'Green' } else { 'Red' })
 Write-Host "  Storage:  $(if ($script:StorageAccount) { $script:StorageAccount } else { '⚠ Not configured' })" -ForegroundColor $(if ($script:StorageAccount) { 'Green' } else { 'Yellow' })
 Write-Host "  Identity: $(if ($script:ClientId) { $script:ClientId.Substring(0,8) + '...' } else { '⚠ Not configured' })" -ForegroundColor $(if ($script:ClientId) { 'Green' } else { 'Yellow' })
+Write-Host "  Auth:     $(if ($script:RequireAuth) { 'Entra ID (Easy Auth)' } else { 'Open (no auth)' })" -ForegroundColor $(if ($script:RequireAuth) { 'Green' } else { 'Yellow' })
 Write-Host ""
 
 $listener = [System.Net.HttpListener]::new()
@@ -439,7 +430,6 @@ try {
         $path = $request.Url.AbsolutePath
         $method = $request.HttpMethod
         
-        # Add CORS headers
         $response.AddHeader("Access-Control-Allow-Origin", "*")
         $response.AddHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         $response.AddHeader("Access-Control-Allow-Headers", "Content-Type")
@@ -454,7 +444,15 @@ try {
         Write-Host "  [$timestamp] $method $path" -ForegroundColor Gray
         
         try {
-            # Route: API endpoints
+            # Auth check for API endpoints (except health)
+            $isApi = $path.StartsWith("/api/")
+            $isHealthCheck = $path -eq "/api/health"
+            
+            if ($isApi -and -not $isHealthCheck -and -not (Test-AuthHeader -Request $request)) {
+                Send-Unauthorized -Response $response
+                continue
+            }
+            
             if ($path -eq "/api/health" -and $method -eq "GET") {
                 Handle-Health -Response $response
             }
@@ -477,7 +475,6 @@ try {
             elseif ($path -eq "/api/runs" -and $method -eq "GET") {
                 Handle-ListRuns -Response $response
             }
-            # Route: Static files (frontend)
             else {
                 $filePath = if ($path -eq "/") { Join-Path $script:FrontendPath "index.html" }
                             else { Join-Path $script:FrontendPath ($path.TrimStart("/")) }
@@ -486,7 +483,7 @@ try {
         }
         catch {
             Write-Host "  ✗ Error: $($_.Exception.Message)" -ForegroundColor Red
-            Send-JsonResponse -Response $response -Data @{ error = $_.Exception.Message } -StatusCode 500
+            try { Send-JsonResponse -Response $response -Data @{ error = $_.Exception.Message } -StatusCode 500 } catch {}
         }
     }
 }

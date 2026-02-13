@@ -571,8 +571,30 @@ export default function App() {
       .catch(() => {})
   }, [])
   
-  // Polling disabled — assessment runs as blocking request now
-  // The startAssessment function handles status updates via a timer
+  // Poll active run
+  useEffect(() => {
+    if (!activeRun || activeRun === 'running') return
+    
+    pollRef.current = setInterval(async () => {
+      try {
+        const status = await api.assessmentStatus(activeRun)
+        setRunStatus(status)
+        
+        if (status.status === 'completed' || status.status === 'failed') {
+          clearInterval(pollRef.current)
+          if (status.status === 'completed') {
+            const res = await api.listResults(activeRun)
+            setResults(res)
+          }
+          api.listRuns().then(d => { if (d.runs) setRuns(d.runs) }).catch(() => {})
+        }
+      } catch (e) {
+        console.error('Poll error:', e)
+      }
+    }, 3000)
+    
+    return () => clearInterval(pollRef.current)
+  }, [activeRun])
   
   const toggleSub = (subId) => {
     setSelectedSubs(prev => 
@@ -595,44 +617,14 @@ export default function App() {
       analystName,
     }
     
-    // Show running state immediately
-    const tempRunId = 'running'
-    setActiveRun(tempRunId)
-    setRunStatus({ status: 'running', elapsedSeconds: 0 })
-    setResults(null)
-    setPage('status')
-    
-    // Start a timer to update elapsed seconds
-    const startTime = Date.now()
-    const timer = setInterval(() => {
-      setRunStatus(prev => prev ? { ...prev, elapsedSeconds: Math.round((Date.now() - startTime) / 1000) } : prev)
-    }, 1000)
-    
     try {
-      // This call blocks until assessment completes (could be 15-45 min)
-      const res = await fetch('/api/assess', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config),
-        signal: AbortSignal.timeout(3600000), // 1 hour timeout
-      }).then(r => r.json())
-      
-      clearInterval(timer)
+      const res = await api.startAssessment(config)
       setActiveRun(res.runId)
-      
-      if (res.status === 'completed') {
-        setRunStatus({ status: 'completed', elapsedSeconds: Math.round((Date.now() - startTime) / 1000) })
-        const results = await api.listResults(res.runId)
-        setResults(results)
-        // Refresh run list
-        api.listRuns().then(d => { if (d.runs) setRuns(d.runs) }).catch(() => {})
-      } else {
-        setRunStatus({ status: 'failed', elapsedSeconds: Math.round((Date.now() - startTime) / 1000), error: res.error })
-      }
+      setRunStatus({ status: 'started', elapsedSeconds: 0 })
+      setResults(null)
+      setPage('status')
     } catch (e) {
-      clearInterval(timer)
-      console.error('Assessment failed:', e)
-      setRunStatus(prev => ({ ...prev, status: 'failed', error: e.message || 'Request timed out or connection lost' }))
+      console.error('Start failed:', e)
     }
   }
   
@@ -659,7 +651,7 @@ export default function App() {
         <nav className="sidebar">
           <div className="sidebar-brand">
             <h1>AVD Assessment</h1>
-            <p>v4.1.0 · Portal v1.0</p>
+            <p>v4.1.0 · Portal v2.0</p>
           </div>
           
           <div className="nav-section">Assessment</div>
