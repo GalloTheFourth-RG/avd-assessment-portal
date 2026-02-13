@@ -4,6 +4,8 @@ A self-hosted web portal that runs the Enhanced AVD Evidence Pack inside your Az
 
 > 🔒 All data stays in your Azure tenant. Secured with Entra ID authentication.
 
+Licensed under [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE), at your option.
+
 ---
 
 ## How It Works
@@ -53,7 +55,7 @@ A self-hosted web portal that runs the Enhanced AVD Evidence Pack inside your Az
 
 **Option A: One-click deploy**
 
-[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fgallothefourth-rg%2Favd-assessment-portal%2Fmain%2Fazuredeploy.json)
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fyour-org%2Favd-assessment-portal%2Fmain%2Fazuredeploy.json)
 
 > After clicking, choose a resource group (or create `rg-avd-assessment`), set a unique **namePrefix**, and click **Review + Create**.
 
@@ -82,13 +84,24 @@ This creates:
 
 ### Step 2: Clone repo and build the container image
 
+The portal code is public, but the assessment script is fetched from a private repo at build time using a GitHub Personal Access Token.
+
 ```powershell
-# Clone the repo (skip if you already have it)
+# Clone the portal repo
 git clone https://github.com/gallothefourth-rg/avd-assessment-portal.git
 cd avd-assessment-portal
 
-# Enable ACR admin (needed for Container App image pull)
-az acr update --name avdassessacr --resource-group rg-avd-assessment --admin-enabled true
+# Create a GitHub PAT with 'repo' scope at https://github.com/settings/tokens
+# The token is used only at build time to download the script — it's not stored in the image
+
+# Build the image (ACR fetches the script from your private repo)
+az acr build --registry avdassessacr --resource-group rg-avd-assessment `
+  --image avd-assessment-portal:latest `
+  --build-arg GITHUB_TOKEN="ghp_your_token_here" `
+  .
+
+# Get ACR credentials and configure the Container App
+$acrPassword = (az acr credential show --name avdassessacr --query "passwords[0].value" -o tsv)
 
 # Build the image in Azure (no local Docker needed)
 az acr build --registry avdassessacr --resource-group rg-avd-assessment --image avd-assessment-portal:latest .
@@ -165,20 +178,19 @@ Start-Process "https://$url"
 
 ## Updating
 
-When a new version of the evidence pack script is available:
+When a new version of the assessment script is pushed to the private repo:
 
 ```powershell
-# Copy the updated script
-Copy-Item "path\to\Get-Enhanced-AVD-EvidencePack.ps1" -Destination "scripts\" -Force
+# Rebuild the image — fetches latest script from private repo
+az acr build --registry avdassessacr --resource-group rg-avd-assessment `
+  --image avd-assessment-portal:latest `
+  --build-arg GITHUB_TOKEN="ghp_your_token_here" `
+  .
 
-# Rebuild and deploy
-git add -A && git commit -m "Update evidence pack to vX.Y.Z" && git push
-az acr build --registry avdassessacr --resource-group rg-avd-assessment --image avd-assessment-portal:latest .
+# Force new revision
 az containerapp update -n avdassess-portal -g rg-avd-assessment `
   --set-env-vars "BUILD_ID=$(Get-Date -Format 'yyyyMMddHHmmss')"
 ```
-
-> **Note:** Changing an env var forces a new Container App revision, which pulls the latest image.
 
 ---
 
@@ -211,14 +223,16 @@ avd-assessment-portal/
 │   │   └── main.jsx              ← Entry point
 │   ├── package.json
 │   └── vite.config.js
-├── scripts/
-│   └── Get-Enhanced-AVD-EvidencePack.ps1  ← Assessment script (v4.1.0)
 ├── azuredeploy.json              ← ARM template (Deploy to Azure button)
-├── Dockerfile                    ← PowerShell 7 + Az + Node + frontend
+├── Dockerfile                    ← Fetches script from private repo at build
 ├── startup.ps1                   ← Container startup wrapper
 ├── CHANGELOG.md                  ← Release history
+├── LICENSE-MIT
+├── LICENSE-APACHE
 └── README.md
 ```
+
+> **Note:** The assessment script (`Get-Enhanced-AVD-EvidencePack.ps1`) is hosted in a [separate private repository](https://github.com/gallothefourth-rg/enhanced-avd-evidence-pack) and fetched at container build time. It is not included in this repo.
 
 ---
 
@@ -239,9 +253,9 @@ avd-assessment-portal/
 
 ## Architecture Decisions
 
+- **Split repo model** — the portal is open source; the assessment script stays private. The Dockerfile fetches it at build time via GitHub API, so the script is never in the public repo or Git history
 - **PowerShell HTTP listener** instead of a framework — keeps the container simple (no extra runtime) and runs the `.ps1` assessment script natively
 - **Async via saved Az profile** — `Save-AzContext`/`Import-AzContext` lets the background process share the managed identity token without process boundary issues
 - **Consumption plan** — scales to zero when idle, meaning near-zero cost between assessments
 - **ACR build** — builds the container in Azure, no local Docker installation required
 - **Easy Auth** — authentication handled at the platform level (Container Apps), not in application code
-

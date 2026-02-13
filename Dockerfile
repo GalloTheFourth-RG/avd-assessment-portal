@@ -1,11 +1,14 @@
 # ============================================================================
 # AVD Assessment Portal — Container Image
 # PowerShell 7 + Az Modules + Frontend
+#
+# The assessment script is fetched from a private GitHub repo at build time.
+# Build with: az acr build --build-arg GITHUB_TOKEN=ghp_xxx ...
 # ============================================================================
 
 FROM mcr.microsoft.com/azure-powershell:latest
 
-# Install Node.js for frontend build (if building in container)
+# Install Node.js for frontend build
 RUN apt-get update && apt-get install -y curl && \
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y nodejs && \
@@ -27,8 +30,19 @@ WORKDIR /app
 # Copy backend
 COPY backend/ ./backend/
 
-# Copy assessment script
-COPY scripts/ ./scripts/
+# Fetch assessment script from private repo at build time
+ARG GITHUB_TOKEN
+ARG SCRIPT_REPO=gallothefourth-rg/enhanced-avd-evidence-pack
+ARG SCRIPT_BRANCH=main
+ARG SCRIPT_PATH=Get-Enhanced-AVD-EvidencePack.ps1
+
+RUN mkdir -p ./scripts && \
+    curl -fsSL \
+      -H "Authorization: token ${GITHUB_TOKEN}" \
+      -H "Accept: application/vnd.github.v3.raw" \
+      "https://api.github.com/repos/${SCRIPT_REPO}/contents/${SCRIPT_PATH}?ref=${SCRIPT_BRANCH}" \
+      -o ./scripts/Get-Enhanced-AVD-EvidencePack.ps1 && \
+    echo "Script downloaded: $(wc -l < ./scripts/Get-Enhanced-AVD-EvidencePack.ps1) lines"
 
 # Copy and build frontend
 COPY frontend/ ./frontend/
