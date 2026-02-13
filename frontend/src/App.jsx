@@ -510,6 +510,7 @@ const api = {
   assessmentStatus: (runId) => fetch(`/api/assess/${runId}`).then(r => r.json()),
   listResults: (runId) => fetch(`/api/results/${runId}`).then(r => r.json()),
   listRuns: () => fetch('/api/runs').then(r => r.json()),
+  deleteRun: (runId) => fetch(`/api/runs/${runId}`, { method: 'DELETE' }).then(r => r.json()),
 }
 
 function formatBytes(bytes) {
@@ -637,6 +638,22 @@ export default function App() {
       setPage('status')
     } catch (e) {
       console.error('Load results failed:', e)
+    }
+  }
+  
+  const deleteRun = async (e, runId) => {
+    e.stopPropagation()
+    if (!confirm(`Delete run ${runId} and all its files?`)) return
+    try {
+      await api.deleteRun(runId)
+      setRuns(prev => prev.filter(r => r.runId !== runId))
+      if (activeRun === runId) {
+        setActiveRun(null)
+        setResults(null)
+        setRunStatus(null)
+      }
+    } catch (err) {
+      console.error('Delete failed:', err)
     }
   }
   
@@ -957,7 +974,20 @@ export default function App() {
                           {run.files} files · {formatBytes(run.totalSize)}
                         </div>
                       </div>
-                      <ChevronRight size={16} style={{ color: 'var(--text-muted)' }} />
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <button 
+                          onClick={(e) => deleteRun(e, run.runId)}
+                          style={{ 
+                            background: 'transparent', border: '1px solid var(--danger)', 
+                            color: 'var(--danger)', borderRadius: '6px', padding: '4px 10px',
+                            cursor: 'pointer', fontSize: '12px', opacity: 0.7,
+                            transition: 'opacity 0.2s'
+                          }}
+                          onMouseEnter={e => e.target.style.opacity = 1}
+                          onMouseLeave={e => e.target.style.opacity = 0.7}
+                        >Delete</button>
+                        <ChevronRight size={16} style={{ color: 'var(--text-muted)' }} />
+                      </div>
                     </div>
                   ))
                 ) : (

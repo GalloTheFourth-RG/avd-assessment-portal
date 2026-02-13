@@ -404,6 +404,28 @@ function Handle-ListRuns {
 }
 
 # ============================================================================
+# API: DELETE /api/runs/{runId} — Delete a past run and its blobs
+# ============================================================================
+function Handle-DeleteRun {
+    param($Response, [string]$RunId)
+    try {
+        Ensure-AzLogin | Out-Null
+        $ctx = $script:StorageCtx; if (-not $ctx) { throw "Storage not configured" }
+        $blobs = Get-AzStorageBlob -Container $script:StorageContainer -Prefix "$RunId/" -Context $ctx
+        $count = 0
+        foreach ($blob in $blobs) {
+            Remove-AzStorageBlob -Blob $blob.Name -Container $script:StorageContainer -Context $ctx -Force | Out-Null
+            $count++
+        }
+        Write-Host "  [$RunId] Deleted $count blobs" -ForegroundColor Yellow
+        Send-JsonResponse -Response $Response -Data @{ runId = $RunId; deleted = $true; filesDeleted = $count }
+    }
+    catch {
+        Send-JsonResponse -Response $Response -Data @{ error = $_.Exception.Message } -StatusCode 500
+    }
+}
+
+# ============================================================================
 # Main HTTP Listener
 # ============================================================================
 Write-Host "`n╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
@@ -431,7 +453,7 @@ try {
         $method = $request.HttpMethod
         
         $response.AddHeader("Access-Control-Allow-Origin", "*")
-        $response.AddHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        $response.AddHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         $response.AddHeader("Access-Control-Allow-Headers", "Content-Type")
         
         if ($method -eq "OPTIONS") {
@@ -474,6 +496,9 @@ try {
             }
             elseif ($path -eq "/api/runs" -and $method -eq "GET") {
                 Handle-ListRuns -Response $response
+            }
+            elseif ($path -match "^/api/runs/([^/]+)$" -and $method -eq "DELETE") {
+                Handle-DeleteRun -Response $response -RunId $Matches[1]
             }
             else {
                 $filePath = if ($path -eq "/") { Join-Path $script:FrontendPath "index.html" }
