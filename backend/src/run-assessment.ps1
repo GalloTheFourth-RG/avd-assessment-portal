@@ -4,7 +4,7 @@
     Handles its own Az login and runs the evidence pack script.
 #>
 param(
-    [string]$ParamsJson,
+    [string]$ParamsFile,
     [string]$RunId,
     [string]$StorageAccount,
     [string]$StorageContainer,
@@ -25,18 +25,17 @@ try {
     }
     Write-Host "[$RunId] Connected."
 
-    # Deserialize parameters
+    # Read parameters from file
+    $raw = Get-Content $ParamsFile -Raw | ConvertFrom-Json
     $params = @{}
-    $raw = $ParamsJson | ConvertFrom-Json
     foreach ($prop in $raw.PSObject.Properties) {
         $val = $prop.Value
-        # Convert JSON arrays back to PowerShell arrays
-        if ($val -is [System.Object[]]) { $val = @($val) }
-        # Convert booleans
-        if ($val -is [System.Management.Automation.PSObject] -and $val.ToString() -eq 'True') { $val = $true }
-        if ($val -is [System.Management.Automation.PSObject] -and $val.ToString() -eq 'False') { $val = $false }
+        # Convert JSON arrays back to PowerShell string arrays
+        if ($val -is [System.Object[]]) { $val = [string[]]@($val) }
         $params[$prop.Name] = $val
     }
+    # Clean up params file
+    Remove-Item $ParamsFile -Force -ErrorAction SilentlyContinue
 
     Write-Host "[$RunId] Running assessment in $outputDir..."
     Push-Location $outputDir

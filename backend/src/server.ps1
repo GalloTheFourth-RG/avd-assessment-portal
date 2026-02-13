@@ -187,11 +187,15 @@ function Handle-StartAssessment {
     
     $paramsJson = $params | ConvertTo-Json -Depth 5 -Compress
     
+    # Write params to temp file (avoids argument escaping nightmare)
+    $paramsFile = "/tmp/$runId-params.json"
+    $paramsJson | Set-Content -Path $paramsFile -Encoding UTF8
+    
     # Launch as a separate pwsh process (gets its own Az login)
     $runnerScript = "/app/backend/src/run-assessment.ps1"
     $proc = Start-Process -FilePath "pwsh" -ArgumentList @(
         "-File", $runnerScript,
-        "-ParamsJson", "'$paramsJson'",
+        "-ParamsFile", $paramsFile,
         "-RunId", $runId,
         "-StorageAccount", $script:StorageAccount,
         "-StorageContainer", $script:StorageContainer,
