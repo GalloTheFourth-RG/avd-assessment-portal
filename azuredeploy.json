@@ -2,7 +2,7 @@
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
   "contentVersion": "1.0.0.0",
   "metadata": {
-    "description": "AVD Assessment Portal — One-click deployment. Creates Container App, Storage, Managed Identity, and assigns Reader + Cost Management Reader + Log Analytics Reader on the current subscription."
+    "description": "AVD Assessment Portal \u2014 One-click deployment. Creates Container App, Storage, Managed Identity, and assigns Reader + Cost Management Reader + Log Analytics Reader on the current subscription."
   },
   "parameters": {
     "namePrefix": {
@@ -54,7 +54,9 @@
       "name": "[variables('storageName')]",
       "location": "[parameters('location')]",
       "kind": "StorageV2",
-      "sku": { "name": "Standard_LRS" },
+      "sku": {
+        "name": "Standard_LRS"
+      },
       "properties": {
         "minimumTlsVersion": "TLS1_2",
         "allowBlobPublicAccess": false,
@@ -76,7 +78,9 @@
       "dependsOn": [
         "[resourceId('Microsoft.Storage/storageAccounts/blobServices', variables('storageName'), 'default')]"
       ],
-      "properties": { "publicAccess": "None" }
+      "properties": {
+        "publicAccess": "None"
+      }
     },
     {
       "type": "Microsoft.Authorization/roleAssignments",
@@ -99,7 +103,9 @@
       "name": "[variables('logAnalyticsName')]",
       "location": "[parameters('location')]",
       "properties": {
-        "sku": { "name": "PerGB2018" },
+        "sku": {
+          "name": "PerGB2018"
+        },
         "retentionInDays": 30
       }
     },
@@ -159,9 +165,18 @@
                 "memory": "2Gi"
               },
               "env": [
-                { "name": "AZURE_CLIENT_ID", "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))).clientId]" },
-                { "name": "STORAGE_ACCOUNT_NAME", "value": "[variables('storageName')]" },
-                { "name": "STORAGE_CONTAINER", "value": "results" }
+                {
+                  "name": "AZURE_CLIENT_ID",
+                  "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))).clientId]"
+                },
+                {
+                  "name": "STORAGE_ACCOUNT_NAME",
+                  "value": "[variables('storageName')]"
+                },
+                {
+                  "name": "STORAGE_CONTAINER",
+                  "value": "results"
+                }
               ]
             }
           ],
@@ -172,7 +187,9 @@
               {
                 "name": "http-rule",
                 "http": {
-                  "metadata": { "concurrentRequests": "10" }
+                  "metadata": {
+                    "concurrentRequests": "10"
+                  }
                 }
               }
             ]
@@ -184,7 +201,7 @@
       "condition": "[parameters('assignReaderOnSubscription')]",
       "type": "Microsoft.Resources/deployments",
       "apiVersion": "2022-09-01",
-      "name": "assign-reader-role",
+      "name": "[concat('avd-rbac-', parameters('namePrefix'))]",
       "subscriptionId": "[subscription().subscriptionId]",
       "location": "[parameters('location')]",
       "dependsOn": [
@@ -196,19 +213,35 @@
           "scope": "inner"
         },
         "parameters": {
-          "principalId": { "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))).principalId]" },
-          "readerRole": { "value": "[variables('readerRole')]" },
-          "costManagementReaderRole": { "value": "[variables('costManagementReaderRole')]" },
-          "logAnalyticsReaderRole": { "value": "[variables('logAnalyticsReaderRole')]" }
+          "principalId": {
+            "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))).principalId]"
+          },
+          "readerRole": {
+            "value": "[variables('readerRole')]"
+          },
+          "costManagementReaderRole": {
+            "value": "[variables('costManagementReaderRole')]"
+          },
+          "logAnalyticsReaderRole": {
+            "value": "[variables('logAnalyticsReaderRole')]"
+          }
         },
         "template": {
           "$schema": "https://schema.management.azure.com/schemas/2018-05-01/subscriptionDeploymentTemplate.json#",
           "contentVersion": "1.0.0.0",
           "parameters": {
-            "principalId": { "type": "string" },
-            "readerRole": { "type": "string" },
-            "costManagementReaderRole": { "type": "string" },
-            "logAnalyticsReaderRole": { "type": "string" }
+            "principalId": {
+              "type": "string"
+            },
+            "readerRole": {
+              "type": "string"
+            },
+            "costManagementReaderRole": {
+              "type": "string"
+            },
+            "logAnalyticsReaderRole": {
+              "type": "string"
+            }
           },
           "resources": [
             {
